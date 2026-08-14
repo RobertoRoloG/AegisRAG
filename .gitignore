@@ -1,0 +1,58 @@
+# ============================================================
+# AegisRAG — .gitignore
+# Python, Node.js, Docker, IDEs y archivos de entorno
+# ============================================================
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ---------- Uploads y modelos ----------
+uploads/
+local_cache/
+
+# ---------- Node.js / Frontend ----------
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# ---------- Variables de entorno ----------
+.env
+.env.local
+.env.*.local
+
+# ---------- Docker ----------
+docker/**/data/
+
+# ---------- IDEs ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- Logs ----------
+*.log
+logs/
