@@ -130,10 +130,11 @@ export default function PdfViewer({
                 .replace(/[^\w\s\u00C0-\u00FF]/gi, " ")
                 .toLowerCase()
                 .split(/\s+/)
-                .filter((w) => w.length > 3)
+                .filter((w) => w.length > 2)
+                .slice(0, 5) // Ancla de inicio: tomar solo las primeras 4-5 palabras del inicio de la cita
             : [];
 
-        // Dibujar resaltado fluido y continuo de marcador fluorescente sobre el canvas 2D
+        // Dibujar resaltado fluido solo al inicio de la cita como ancla visual
         if (searchTerms.length > 0 && context) {
           interface HighlightRect {
             x: number;
@@ -188,13 +189,16 @@ export default function PdfViewer({
             }
           });
 
-          // Dibujar franjas continuas con estilo marcador fluorescente amarillo suave
-          context.save();
-          context.fillStyle = "rgba(253, 224, 71, 0.45)"; // Amarillo marcador fluorescente
+          // Tomar únicamente la primera línea inicial (ancla de la cita)
+          const anchorLines = mergedLines.slice(0, 1);
 
-          mergedLines.forEach((line) => {
-            const paddingX = 3;
-            const paddingY = 1;
+          // Dibujar franja continua del inicio de la cita
+          context.save();
+          context.fillStyle = "rgba(253, 224, 71, 0.5)"; // Amarillo marcador fluorescente
+
+          anchorLines.forEach((line) => {
+            const paddingX = 4;
+            const paddingY = 2;
             const rx = line.x - paddingX;
             const ry = line.y - paddingY;
             const rw = line.w + paddingX * 2;
