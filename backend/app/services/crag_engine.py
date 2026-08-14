@@ -63,17 +63,33 @@ class CRAGEngine:
             "total": 0.0,
         }
 
-        # Clean search query (remover muletillas conversacionales)
-        search_query = clean_search_query(query)
-        logger.info("Query original: '%s' -> Query optimizada para vector store: '%s'", query, search_query)
-
-        # ── 1. Nodo: RETRIEVE ──────────────────────────────
+        # ── 1. Nodo: RETRIEVE DUAL ──────────────────────────
         start_ret = time.perf_counter()
-        # Búsqueda híbrida asíncrona recuperando 40 candidatos para mayor cobertura
-        candidates = await hybrid_search(search_query, document_ids=document_ids, top_k=40)
         
-        # Re-Ranking ejecutado en hilo secundario
-        top_chunks = await asyncio.to_thread(self.reranker.rerank, query, candidates, top_n=7)
+        # Ejecutar búsqueda por lenguaje natural completo y búsqueda por entidades en paralelo
+        search_query = clean_search_query(query)
+        logger.info("Consulta Natural: '%s' | Consulta Entidades: '%s'", query, search_query)
+
+        task_orig = hybrid_search(query, document_ids=document_ids, top_k=30)
+        
+        if search_query.lower() != query.lower():
+            task_entity = hybrid_search(search_query, document_ids=document_ids, top_k=30)
+            res_orig, res_entity = await asyncio.gather(task_orig, task_entity)
+        else:
+            res_orig = await task_orig
+            res_entity = []
+
+        # Fusionar y deduplicar candidatos de ambas búsquedas por ID de chunk
+        candidates_map = {c["id"]: c for c in res_orig}
+        for c in res_entity:
+            if c["id"] not in candidates_map:
+                candidates_map[c["id"]] = c
+
+        all_candidates = list(candidates_map.values())
+        logger.info("Candidatos unificados de búsqueda dual: %d fragmentos", len(all_candidates))
+
+        # Re-Ranking ejecutado en hilo secundario sobre todos los candidatos
+        top_chunks = await asyncio.to_thread(self.reranker.rerank, query, all_candidates, top_n=7)
         latencies["retrieval"] = round((time.perf_counter() - start_ret) * 1000, 2)
 
         # ── 2. Nodo: GRADE ─────────────────────────────────
