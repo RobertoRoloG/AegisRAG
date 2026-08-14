@@ -18,6 +18,23 @@ from app.services.llm import get_llm_service
 from app.services.reranker import get_reranker_service
 from app.services.retrieval import hybrid_search
 
+import re
+
+def clean_search_query(query: str) -> str:
+    """Elimina muletillas conversacionales en español para concentrar la búsqueda híbrida en la entidad clave."""
+    fillers = [
+        r"\bhablame de\b", r"\bháblame de\b", r"\bdime sobre\b", r"\bdime informacion de\b",
+        r"\bdime información sobre\b", r"\bcuentame de\b", r"\bcuéntame de\b", r"\bque dice de\b",
+        r"\bqué dice de\b", r"\bque habla de\b", r"\bqué habla de\b", r"\bexplicame\b",
+        r"\bexplícame\b", r"\bbusca sobre\b", r"\binformacion de\b", r"\binformación sobre\b",
+        r"\bque puedes decirme de\b", r"\bqué puedes decirme de\b", r"\bque sabes de\b", r"\bqué sabes de\b"
+    ]
+    cleaned = query
+    for pattern in fillers:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip()
+    return cleaned if len(cleaned) >= 2 else query
+
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -37,13 +54,6 @@ class CRAGEngine:
     ) -> dict[str, Any]:
         """
         Ejecuta el flujo completo de Corrective RAG (CRAG) midiendo latencias individuales.
-
-        Args:
-            query: Consulta original del usuario.
-            document_ids: Lista opcional de IDs de documentos para filtrar el contexto.
-
-        Returns:
-            Diccionario estructurado con la respuesta del LLM, fuentes, estado y latencias.
         """
         start_total = time.perf_counter()
         latencies = {
@@ -53,18 +63,22 @@ class CRAGEngine:
             "total": 0.0,
         }
 
+        # Clean search query (remover muletillas conversacionales)
+        search_query = clean_search_query(query)
+        logger.info("Query original: '%s' -> Query optimizada para vector store: '%s'", query, search_query)
+
         # ── 1. Nodo: RETRIEVE ──────────────────────────────
         start_ret = time.perf_counter()
-        # Búsqueda híbrida asíncrona
-        candidates = await hybrid_search(query, document_ids=document_ids, top_k=20)
+        # Búsqueda híbrida asíncrona recuperando 40 candidatos para mayor cobertura
+        candidates = await hybrid_search(search_query, document_ids=document_ids, top_k=40)
         
-        # Re-Ranking ejecutado en hilo secundario (evita bloqueo de CPU de FastAPI)
+        # Re-Ranking ejecutado en hilo secundario
         top_chunks = await asyncio.to_thread(self.reranker.rerank, query, candidates, top_n=7)
         latencies["retrieval"] = round((time.perf_counter() - start_ret) * 1000, 2)
 
         # ── 2. Nodo: GRADE ─────────────────────────────────
-        # Evaluamos si hay coincidencias literales de nombres propios o palabras de la query
-        query_terms = [w.lower().strip() for w in query.split() if len(w) >= 3]
+        # Evaluamos si hay coincidencias literales de nombres propios o palabras clave de la query limpia
+        query_terms = [w.lower().strip() for w in search_query.split() if len(w) >= 2]
         has_literal_match = False
 
         if top_chunks and query_terms:
