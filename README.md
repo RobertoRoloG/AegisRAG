@@ -42,19 +42,20 @@ AegisRAG is a production-grade, full-stack Corrective Retrieval-Augmented Genera
     ```
 
 2.  **Configure Environment Variables:**
-    Copy the template file to `.env` and adjust the configuration as required:
+    Copy the template file to `.env` in the root and in the `backend/` directory, then adjust configuration (e.g. your `GROQ_API_KEY`):
     ```bash
+    # Root
     cp .env.example .env
+    # Backend
+    cp .env.example backend/.env
     ```
-    The main environment variables defined in `.env` are:
-    *   `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`: PostgreSQL credentials.
-    *   `POSTGRES_PORT`: PostgreSQL host port (default `5433`).
-    *   `QDRANT_PORT` / `QDRANT_GRPC_PORT`: Qdrant host ports (default `6333`/`6334`).
-    *   `REDIS_PORT` / `REDIS_URL`: Redis configuration.
-    *   `LLM_PROVIDER`: Pluggable LLM provider (`ollama`, `groq`, or `openai`).
-    *   `LLM_MODEL`: Target model (e.g., `llama-3.1-8b-instant`, `llama3`).
-    *   `GROQ_API_KEY` / `OPENAI_API_KEY`: API keys for cloud model providers.
-    *   `CRAG_RELEVANCE_THRESHOLD`: Document evaluation relevance score threshold (default `0.35`).
+    Key environment variables:
+    *   `POSTGRES_PORT`: Host port (default `5433`).
+    *   `QDRANT_PORT` / `QDRANT_GRPC_PORT`: Vector DB ports (default `6333` / `6334`).
+    *   `REDIS_PORT` / `REDIS_URL`: Redis port (default `6380`).
+    *   `LLM_PROVIDER`: Provider (`groq`, `ollama`, or `openai`).
+    *   `LLM_MODEL`: Target model (e.g., `openai/gpt-oss-20b` for Groq, `llama3.1` for Ollama).
+    *   `GROQ_API_KEY`: Required if using Groq cloud inference.
 
 3.  **Start Services (Infrastructure Stack):**
     Spin up PostgreSQL, Qdrant, and Redis containers:
@@ -63,7 +64,7 @@ AegisRAG is a production-grade, full-stack Corrective Retrieval-Augmented Genera
     ```
 
 4.  **Set Up Backend (FastAPI & Celery):**
-    Initialize a virtual environment, activate it, and install Python dependencies:
+    Initialize a virtual environment, install dependencies, and run database migrations:
     ```bash
     cd backend
     python -m venv .venv
@@ -75,6 +76,9 @@ AegisRAG is a production-grade, full-stack Corrective Retrieval-Augmented Genera
 
     pip install --upgrade pip
     pip install -r requirements.txt
+
+    # Apply database migrations:
+    alembic upgrade head
     ```
 
 5.  **Set Up Frontend (Next.js):**
@@ -85,40 +89,55 @@ AegisRAG is a production-grade, full-stack Corrective Retrieval-Augmented Genera
     ```
 
 ## Usage / Execution
-1.  **Verify Service Infrastructure:**
-    Ensure database, vector store, and broker containers are healthy:
-    ```bash
-    docker compose ps
-    ```
+Run the services across 3 separate terminal sessions:
 
-2.  **Run Backend API Server:**
-    From the `backend` directory, activate the virtual environment and launch Uvicorn:
+1.  **Backend API Server (Terminal 1):**
     ```bash
     cd backend
-    # Activate virtual environment if not done already
+    # Activate virtual environment
+    .venv\Scripts\activate      # Windows
+    # source .venv/bin/activate # Linux/macOS
     uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
     ```
 
-3.  **Run Celery Ingestion Worker:**
-    In a separate terminal session, navigate to the `backend` directory, activate the virtual environment, and run:
+2.  **Celery Ingestion Worker (Terminal 2):**
     ```bash
-    # Windows (PowerShell):
+    cd backend
+    # Activate virtual environment
+    # Windows (CRITICAL: always use --pool=solo on Windows):
     .venv\Scripts\celery.exe -A app.workers.celery_app worker --loglevel=info --pool=solo
     # Linux / macOS:
     celery -A app.workers.celery_app worker --loglevel=info
     ```
 
-4.  **Run Frontend Client:**
-    From the `frontend` directory, start the Next.js development server:
+3.  **Frontend Client (Terminal 3):**
     ```bash
     cd frontend
     npm run dev
     ```
 
-5.  **Access Main Endpoints:**
+4.  **Access Main Endpoints:**
     *   **Frontend UI:** [http://localhost:3000](http://localhost:3000)
     *   **Swagger API Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
     *   **Backend Health Check:** [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
+
+---
+
+## ⚡ Important Notes & Troubleshooting
+
+### 1. First PDF Upload Duration (One-Time Model Download)
+* The **very first time** a document is uploaded, FastEmbed automatically downloads the local embedding model weights (`BAAI/bge-small-en-v1.5` ~130MB) and sparse BM25 tokenizers from HuggingFace to your local cache.
+* During this initial download, document processing will appear to take ~30–60 seconds.
+* **Subsequent uploads will take ~1–2 seconds**, as models are cached locally.
+
+### 2. Windows Celery Concurrency (`--pool=solo`)
+* Celery under Windows does not support `fork()`. Running Celery without `--pool=solo` will lead to worker deadlocks or task freezes during ingestion. Always include `--pool=solo` on Windows.
+
+### 3. Port Mappings
+To prevent collisions with existing system databases, AegisRAG runs with custom host ports:
+* PostgreSQL: `5433` (mapped from container `5432`)
+* Redis: `6380` (mapped from container `6379`)
+* Qdrant: `6333` (HTTP) / `6334` (gRPC)
 
 ## Roadmap
 - [ ] Add support for additional file formats (`.docx`, `.md`, `.txt`, `.html`).
