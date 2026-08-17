@@ -162,17 +162,28 @@ export default function DocumentSidebar({ onSelectionChange, selectedDocIds }: D
     setUploading(true);
     setError(null);
 
+    // Añadir documento temporal a la lista para feedback visual instantáneo
+    const tempId = "temp-" + Date.now();
+    const tempDoc: TrackedDocument = {
+      id: tempId,
+      filename: file.name,
+      status: "UPLOADING",
+      totalChunks: null,
+      errorMessage: null,
+    };
+    setDocuments((prev) => [tempDoc, ...prev]);
+
     try {
       const res = await uploadDocument(file);
-      const newDoc: TrackedDocument = {
-        id: res.document_id,
-        filename: file.name,
-        status: "PENDING",
-        totalChunks: null,
-        errorMessage: null,
-      };
-
-      setDocuments((prev) => [newDoc, ...prev]);
+      
+      // Actualizar el documento temporal con el ID real
+      setDocuments((prev) => 
+        prev.map(d => d.id === tempId ? {
+          ...d,
+          id: res.document_id,
+          status: "PENDING",
+        } : d)
+      );
       
       // Auto-seleccionar agregando el nuevo documento
       const nextDocIds = [...selectedDocIds, res.document_id];
@@ -184,6 +195,8 @@ export default function DocumentSidebar({ onSelectionChange, selectedDocIds }: D
       
       startPolling(res.document_id, file.name);
     } catch (err: any) {
+      // Eliminar el documento temporal si falla la subida
+      setDocuments((prev) => prev.filter(d => d.id !== tempId));
       setError(err.message || "Error al subir documento.");
     } finally {
       setUploading(false);
@@ -371,10 +384,12 @@ export default function DocumentSidebar({ onSelectionChange, selectedDocIds }: D
                               )}
                             </div>
                           )}
-                          {(doc.status === "PENDING" || doc.status === "PROCESSING") && (
+                          {(doc.status === "PENDING" || doc.status === "PROCESSING" || doc.status === "UPLOADING") && (
                             <div className="flex items-center gap-1.5">
                               <Loader2 className="h-3 w-3 text-indigo-400 animate-spin" />
-                              <span className="text-xs text-indigo-400">Procesando...</span>
+                              <span className="text-xs text-indigo-400">
+                                {doc.status === "UPLOADING" ? "Subiendo..." : "Procesando..."}
+                              </span>
                             </div>
                           )}
                         </div>

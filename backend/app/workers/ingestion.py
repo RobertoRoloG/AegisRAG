@@ -103,10 +103,9 @@ def _extract_pdf_pages_safe(file_path: str) -> tuple[list[tuple[int, str]], list
             if text and text.strip():
                 digital_pages.append((page_num, text.strip()))
             else:
-                # Renderizar a array de imagen para OCR paralelo posterior
-                pil_img = page.render(scale=1.2).to_pil()
-                img_array = np.array(pil_img)
-                ocr_pages.append((page_num, img_array))
+                # OCR desactivado temporalmente para agilizar la ingestión.
+                # Las imágenes se ignoran en el índice pero el archivo original no se altera.
+                pass
         pdf_doc.close()
 
     return digital_pages, ocr_pages

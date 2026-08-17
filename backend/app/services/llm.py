@@ -157,8 +157,8 @@ class LLMService:
         # Mapear modelos estándar a modelos activos de Groq
         # Groq no soporta modelos genéricos como 'llama3', requiere nombres específicos
         groq_model = self.model
-        if groq_model in ["llama3", "llama3.2", "llama"]:
-            groq_model = "llama-3.1-8b-instant"
+        if groq_model in ["llama3", "llama3.2", "llama", "llama-3.1-8b-instant"]:
+            groq_model = "openai/gpt-oss-20b"
 
         messages = []
         if system_prompt:
