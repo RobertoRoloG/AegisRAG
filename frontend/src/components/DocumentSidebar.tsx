@@ -185,14 +185,6 @@ export default function DocumentSidebar({ onSelectionChange, selectedDocIds }: D
         } : d)
       );
       
-      // Auto-seleccionar agregando el nuevo documento
-      const nextDocIds = [...selectedDocIds, res.document_id];
-      const nextFilenames = [
-        ...documents.filter((d) => selectedDocIds.includes(d.id)).map((d) => d.filename),
-        file.name
-      ];
-      onSelectionChange(nextDocIds, nextFilenames);
-      
       startPolling(res.document_id, file.name);
     } catch (err: any) {
       // Eliminar el documento temporal si falla la subida

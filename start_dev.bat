@@ -1,0 +1,16 @@
+@echo off
+echo Iniciando entorno de desarrollo de AegisRAG...
+
+echo Levantando contenedores Docker...
+docker compose up -d
+
+echo Iniciando worker de Celery...
+start "AegisRAG Celery" cmd /k "cd backend && .venv\Scripts\celery.exe -A app.workers.celery_app worker --loglevel=info --pool=solo"
+
+echo Iniciando servidor Backend (FastAPI)...
+start "AegisRAG Backend" cmd /k "cd backend && .venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+
+echo Iniciando Frontend (Next.js)...
+start "AegisRAG Frontend" cmd /k "cd frontend && npm run dev"
+
+echo Todos los servicios han sido iniciados.
