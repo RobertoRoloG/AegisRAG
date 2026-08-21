@@ -124,97 +124,103 @@ export default function PdfViewer({
         if (!active || !data) return;
 
         const { viewport, textContent, context } = data;
-        const searchTerms =
-          highlightEnabled && snippet
-            ? snippet
-                .replace(/[^\w\s\u00C0-\u00FF]/gi, " ")
-                .toLowerCase()
-                .split(/\s+/)
-                .filter((w) => w.length > 2)
-                .slice(0, 5) // Ancla de inicio: tomar solo las primeras 4-5 palabras del inicio de la cita
-            : [];
 
-        // Dibujar resaltado fluido solo al inicio de la cita como ancla visual
-        if (searchTerms.length > 0 && context) {
-          interface HighlightRect {
-            x: number;
-            y: number;
-            w: number;
-            h: number;
-          }
+        // Dibujar resaltado/indicador inteligente si está habilitado
+        if (highlightEnabled && snippet && context) {
+          // Limpiar e identificar la frase de anclaje inicial de la cita
+          const cleanSnippet = snippet
+            .toLowerCase()
+            .replace(/[^\w\s\u00C0-\u00FF]/gi, " ")
+            .trim();
 
-          const rawRects: HighlightRect[] = [];
+          const words = cleanSnippet.split(/\s+/).filter((w) => w.length > 2);
 
-          textContent.items.forEach((item: any) => {
-            if (!("str" in item) || !item.str.trim() || !item.transform) return;
+          if (words.length > 0) {
+            // Formar frase de búsqueda larga (3 palabras) y corta (2 palabras)
+            const searchPhrase = words.slice(0, 3).join(" ");
+            const searchPhraseShort = words.slice(0, 2).join(" ");
+            const firstWord = words[0];
 
-            const itemText = item.str.toLowerCase();
-            const isMatch = searchTerms.some((term) => itemText.includes(term));
+            let bestItem: any = null;
+            let maxScore = 0;
 
-            if (isMatch) {
-              const tx = item.transform[4];
-              const ty = item.transform[5];
+            // Recorrer los bloques de texto de PDF.js para darles puntuación (scoring)
+            textContent.items.forEach((item: any) => {
+              if (!("str" in item) || !item.str.trim() || !item.transform) return;
+
+              const itemText = item.str.toLowerCase();
+              let score = 0;
+
+              if (searchPhrase && itemText.includes(searchPhrase)) {
+                score = 100;
+              } else if (searchPhraseShort && itemText.includes(searchPhraseShort)) {
+                score = 80;
+              } else if (firstWord && itemText.includes(firstWord)) {
+                // Evitar falsos positivos excesivos con palabras demasiado genéricas
+                const commonWords = ["para", "como", "este", "esta", "todo", "todos", "sobre", "entre"];
+                if (!commonWords.includes(firstWord)) {
+                  score = 30;
+                }
+              }
+
+              if (score > maxScore) {
+                maxScore = score;
+                bestItem = item;
+              }
+            });
+
+            // Si encontramos la mejor línea de anclaje de la cita, dibujamos el indicador
+            if (bestItem && maxScore > 0) {
+              const tx = bestItem.transform[4];
+              const ty = bestItem.transform[5];
               const fontHeight =
-                Math.sqrt(item.transform[2] * item.transform[2] + item.transform[3] * item.transform[3]) || 12;
-              const fontWidth = item.width || item.str.length * fontHeight * 0.5;
+                Math.sqrt(bestItem.transform[2] * bestItem.transform[2] + bestItem.transform[3] * bestItem.transform[3]) || 12;
+              const fontWidth = bestItem.width || bestItem.str.length * fontHeight * 0.5;
 
-              // Convertir coordenadas PDF a píxeles de Canvas
+              // Convertir coordenadas PDF a coordenadas de píxeles del Canvas
               const [p1x, p1y] = viewport.convertToViewportPoint(tx, ty);
               const [p2x, p2y] = viewport.convertToViewportPoint(tx + fontWidth, ty + fontHeight);
 
               const minX = Math.min(p1x, p2x);
               const minY = Math.min(p1y, p2y);
-              const width = Math.max(Math.abs(p2x - p1x), 10);
               const height = Math.max(Math.abs(p2y - p1y), fontHeight * scale);
 
-              rawRects.push({ x: minX, y: minY, w: width, h: height });
+              context.save();
+
+              // ── 1. DIBUJAR INDICADOR VERTICAL EN EL MARGEN IZQUIERDO ──
+              context.fillStyle = "rgba(99, 102, 241, 0.95)"; // Indigo-500 sólido y brillante
+
+              const rx = minX - 12; // 12px a la izquierda del texto
+              const ry = minY - 2;
+              const rw = 4;        // 4px de grosor
+              const rh = height + 4;
+              const radius = 2;    // Esquinas ligeramente redondeadas
+
+              context.beginPath();
+              if (typeof (context as any).roundRect === "function") {
+                (context as any).roundRect(rx, ry, rw, rh, radius);
+              } else {
+                context.rect(rx, ry, rw, rh);
+              }
+              context.fill();
+
+              // ── 2. DIBUJAR UN SUTIL SOMBREADO DE FONDO SOBRE LA LÍNEA ──
+              // Brinda una guía de lectura muy suave sin oscurecer ni pintar encima del texto
+              context.fillStyle = "rgba(99, 102, 241, 0.08)"; // Sombreado translúcido (8% opacidad)
+              const bg_rx = minX - 4;
+              const bg_rw = fontWidth * scale + 8;
+              
+              context.beginPath();
+              if (typeof (context as any).roundRect === "function") {
+                (context as any).roundRect(bg_rx, ry, bg_rw, rh, 3);
+              } else {
+                context.rect(bg_rx, ry, bg_rw, rh);
+              }
+              context.fill();
+
+              context.restore();
             }
-          });
-
-          // Agrupar y fusionar rectángulos de la misma línea (tolerancia vertical de 6px)
-          const mergedLines: HighlightRect[] = [];
-          rawRects.sort((a, b) => a.y - b.y || a.x - b.x);
-
-          rawRects.forEach((rect) => {
-            const existingLine = mergedLines.find((line) => Math.abs(line.y - rect.y) < 6);
-
-            if (existingLine) {
-              const newX = Math.min(existingLine.x, rect.x);
-              const newMaxX = Math.max(existingLine.x + existingLine.w, rect.x + rect.w);
-              existingLine.x = newX;
-              existingLine.w = newMaxX - newX;
-              existingLine.h = Math.max(existingLine.h, rect.h);
-            } else {
-              mergedLines.push({ ...rect });
-            }
-          });
-
-          // Tomar únicamente la primera línea inicial (ancla de la cita)
-          const anchorLines = mergedLines.slice(0, 1);
-
-          // Dibujar franja continua del inicio de la cita
-          context.save();
-          context.fillStyle = "rgba(253, 224, 71, 0.5)"; // Amarillo marcador fluorescente
-
-          anchorLines.forEach((line) => {
-            const paddingX = 4;
-            const paddingY = 2;
-            const rx = line.x - paddingX;
-            const ry = line.y - paddingY;
-            const rw = line.w + paddingX * 2;
-            const rh = line.h + paddingY * 2;
-            const radius = Math.min(4, rh / 2);
-
-            context.beginPath();
-            if (typeof (context as any).roundRect === "function") {
-              (context as any).roundRect(rx, ry, rw, rh, radius);
-            } else {
-              context.rect(rx, ry, rw, rh);
-            }
-            context.fill();
-          });
-
-          context.restore();
+          }
         }
       })
       .catch((err) => {
