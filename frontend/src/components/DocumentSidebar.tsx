@@ -7,8 +7,6 @@ import { uploadDocument, getDocumentStatus, listDocuments, deleteDocument } from
 interface DocumentSidebarProps {
   onSelectionChange: (docIds: string[], filenames: string[]) => void;
   selectedDocIds: string[];
-  selectedFilenames: string[];
-  viewerPdf: { docId: string; filename: string; pageNumber: number; snippet?: string } | null;
 }
 
 interface TrackedDocument {
@@ -22,8 +20,6 @@ interface TrackedDocument {
 export default function DocumentSidebar({
   onSelectionChange,
   selectedDocIds,
-  selectedFilenames,
-  viewerPdf,
 }: DocumentSidebarProps) {
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -65,16 +61,6 @@ export default function DocumentSidebar({
     };
   }, []);
 
-  // Si cambia el viewerPdf (citas clicadas en chat) y el documento no está seleccionado en el panel izquierdo,
-  // lo agregamos automáticamente a la selección para que el chat responda sobre él
-  useEffect(() => {
-    if (viewerPdf && !selectedDocIds.includes(viewerPdf.docId)) {
-      const nextDocIds = [...selectedDocIds, viewerPdf.docId];
-      const nextFilenames = [...selectedFilenames, viewerPdf.filename];
-      onSelectionChange(nextDocIds, nextFilenames);
-    }
-  }, [viewerPdf]);
-
   const startPolling = (docId: string, filename: string) => {
     if (activePollsRef.current[docId]) {
       clearInterval(activePollsRef.current[docId]);
@@ -115,10 +101,15 @@ export default function DocumentSidebar({
 
     if (selectedDocIds.includes(docId)) {
       nextDocIds = selectedDocIds.filter((id) => id !== docId);
-      nextFilenames = selectedFilenames.filter((name) => name !== filename);
+      nextFilenames = documents
+        .filter((d) => nextDocIds.includes(d.id) && d.id !== docId)
+        .map((d) => d.filename);
     } else {
       nextDocIds = [...selectedDocIds, docId];
-      nextFilenames = [...selectedFilenames, filename];
+      nextFilenames = [
+        ...documents.filter((d) => selectedDocIds.includes(d.id)).map((d) => d.filename),
+        filename
+      ];
     }
 
     onSelectionChange(nextDocIds, nextFilenames);
@@ -142,9 +133,9 @@ export default function DocumentSidebar({
 
       // Quitar de la selección activa
       const nextDocIds = selectedDocIds.filter((id) => id !== docId);
-      const nextFilenames = selectedFilenames.filter(
-        (name) => name !== documents.find((d) => d.id === docId)?.filename
-      );
+      const nextFilenames = documents
+        .filter((d) => nextDocIds.includes(d.id) && d.id !== docId)
+        .map((d) => d.filename);
 
       onSelectionChange(nextDocIds, nextFilenames);
     } catch (err: any) {
