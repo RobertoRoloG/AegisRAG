@@ -56,7 +56,6 @@ export default function ChatInterface({
     setInput("");
     setError(null);
 
-    // Agregar mensaje del usuario a la UI
     const userMsg: Message = {
       id: `user-${Date.now()}`,
       sender: "user",
@@ -64,7 +63,6 @@ export default function ChatInterface({
     };
     setMessages((prev) => [...prev, userMsg]);
 
-    // Validar si hay al menos un documento seleccionado
     if (selectedDocIds.length === 0) {
       const warnMsg: Message = {
         id: `bot-warn-${Date.now()}`,
@@ -97,11 +95,9 @@ export default function ChatInterface({
     }
   };
 
-  // Helper para identificar citas en texto y convertirlas en botones clicables con doc_id
   const parseCitations = (text: string, sources: SourceDocument[] | undefined) => {
     if (!text) return text;
     
-    // Capturar [nombre.pdf, pág. X], [nombre.pdf, pag X], [nombre.pdf p. X], o [nombre.pdf] sin número de página explícito
     const citationRegex = /\[([^\]]+?\.pdf)(?:[,\s]*(?:pág|pag|página|pagina|p)\.?\s*(\d+))?\]/gi;
     const parts = [];
     let lastIndex = 0;
@@ -112,7 +108,6 @@ export default function ChatInterface({
     while ((match = citationRegex.exec(text)) !== null) {
       const matchIndex = match.index;
       
-      // Texto previo
       if (matchIndex > lastIndex) {
         parts.push(text.substring(lastIndex, matchIndex));
       }
@@ -121,7 +116,6 @@ export default function ChatInterface({
       const pageNumber = match[2] ? parseInt(match[2], 10) : 1;
       const fullCitationText = match[0];
 
-      // Buscar fuente coincidente con tolerancia a espacios / '+' / guiones bajos
       let matchingSource = sources?.find(
         (src) => src.filename.toLowerCase() === filename.toLowerCase()
       );
@@ -134,7 +128,6 @@ export default function ChatInterface({
         });
       }
 
-      // Fallback al primer documento fuente si solo hay uno seleccionado o disponible
       if (!matchingSource && sources && sources.length > 0) {
         matchingSource = sources[0];
       }
@@ -143,6 +136,7 @@ export default function ChatInterface({
         const docId = matchingSource.doc_id;
         const targetFilename = matchingSource.filename;
         const snippetText = matchingSource.snippet ? matchingSource.snippet.slice(0, 50) : undefined;
+
         parts.push(
           <button
             key={`cite-${matchIndex}`}
@@ -168,25 +162,26 @@ export default function ChatInterface({
     return parts.length > 0 ? parts : text;
   };
 
-  // Helper para renderizar negritas (**texto**) de Markdown y citas interactivas
   const parseBoldText = (text: string, sources?: SourceDocument[]) => {
     const parts = text.split(/(\*\*.*?\*\*)/g);
+
     return parts.flatMap((part, index) => {
       if (part.startsWith("**") && part.endsWith("**")) {
         const boldInner = part.slice(2, -2);
         const parsedInner = parseCitations(boldInner, sources);
+
         return [
           <strong key={index} className="font-extrabold text-zinc-50">
             {Array.isArray(parsedInner) ? parsedInner : [parsedInner]}
           </strong>,
         ];
       }
+
       const parsed = parseCitations(part, sources);
       return Array.isArray(parsed) ? parsed : [parsed];
     });
   };
 
-  // Función para parsear texto de Markdown (Negritas + Listas + Párrafos) de forma premium
   const renderFormattedText = (text: string, sources?: SourceDocument[]) => {
     if (!text) return null;
     
@@ -199,7 +194,10 @@ export default function ChatInterface({
     const flushList = () => {
       if (listItems.length > 0) {
         formattedElements.push(
-          <ul key={`list-${keyCounter++}`} className="list-disc pl-5 my-2 space-y-1.5 text-zinc-300">
+          <ul
+            key={`list-${keyCounter++}`}
+            className="list-disc pl-5 my-2 space-y-1.5 text-zinc-300"
+          >
             {listItems}
           </ul>
         );
@@ -216,14 +214,23 @@ export default function ChatInterface({
       if (isNumbered) {
         flushList();
         const content = isNumbered[1];
+
         formattedElements.push(
-          <div key={`num-${keyCounter++}`} className="flex gap-2 pl-2 my-2 leading-relaxed text-zinc-300">
-            <span className="font-bold text-indigo-400 shrink-0">{trimmedLine.split(".")[0]}.</span>
-            <span className="flex-1">{parseBoldText(content, sources)}</span>
+          <div
+            key={`num-${keyCounter++}`}
+            className="flex gap-2 pl-2 my-2 leading-relaxed text-zinc-300"
+          >
+            <span className="font-bold text-indigo-400 shrink-0">
+              {trimmedLine.split(".")[0]}.
+            </span>
+            <span className="flex-1">
+              {parseBoldText(content, sources)}
+            </span>
           </div>
         );
       } else if (isBullet) {
         const content = isBullet[1];
+
         listItems.push(
           <li key={`bullet-item-${keyCounter++}`} className="leading-relaxed">
             {parseBoldText(content, sources)}
@@ -231,14 +238,20 @@ export default function ChatInterface({
         );
       } else {
         flushList();
+
         if (trimmedLine) {
           formattedElements.push(
-            <p key={`p-${keyCounter++}`} className="my-2 leading-relaxed text-zinc-300">
+            <p
+              key={`p-${keyCounter++}`}
+              className="my-2 leading-relaxed text-zinc-300"
+            >
               {parseBoldText(trimmedLine, sources)}
             </p>
           );
         } else {
-          formattedElements.push(<div key={`spacer-${keyCounter++}`} className="h-2" />);
+          formattedElements.push(
+            <div key={`spacer-${keyCounter++}`} className="h-2" />
+          );
         }
       }
     });
@@ -250,13 +263,15 @@ export default function ChatInterface({
 
   return (
     <section className="flex-1 flex flex-col h-full bg-zinc-900/10">
+
       {/* Header del Chat */}
       <div className="h-16 border-b border-zinc-800/80 px-8 flex items-center justify-between bg-zinc-950/20">
         <div>
           <h1 className="text-sm font-semibold text-zinc-100 flex items-center gap-1.5">
             <Sparkles className="h-4 w-4 text-indigo-400" />
-            Asistente RAG
+            Asistente AegisRAG
           </h1>
+
           <p className="text-xs text-zinc-500 mt-0.5">
             {selectedFilenames.length === 0
               ? "⚠️ Ningún documento seleccionado"
@@ -267,6 +282,7 @@ export default function ChatInterface({
         </div>
 
         <div className="flex items-center gap-3">
+
           {/* Botón Global para Activar / Desactivar Resaltado de Citas */}
           <button
             onClick={onToggleHighlight}
@@ -275,20 +291,36 @@ export default function ChatInterface({
                 ? "bg-amber-500/20 border-amber-500/50 text-amber-300 hover:bg-amber-500/30 shadow-sm shadow-amber-500/10"
                 : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
             }`}
-            title={highlightEnabled ? "Desactivar resaltado automático de citas en el PDF" : "Activar resaltado automático de citas en el PDF"}
+            title={
+              highlightEnabled
+                ? "Desactivar resaltado automático de citas en el PDF"
+                : "Activar resaltado automático de citas en el PDF"
+            }
           >
-            <Sparkles className={`h-3.5 w-3.5 ${highlightEnabled ? "text-amber-400 animate-pulse" : "text-zinc-500"}`} />
-            <span>Resaltar Citas: {highlightEnabled ? "ON" : "OFF"}</span>
+            <Sparkles
+              className={`h-3.5 w-3.5 ${
+                highlightEnabled
+                  ? "text-amber-400 animate-pulse"
+                  : "text-zinc-500"
+              }`}
+            />
+            <span>
+              Resaltar Citas: {highlightEnabled ? "ON" : "OFF"}
+            </span>
           </button>
 
           {selectedDocIds.length > 0 && (
             <button
-              onClick={() => onOpenPdf(selectedDocIds[0], selectedFilenames[0], 1)}
+              onClick={() =>
+                onOpenPdf(selectedDocIds[0], selectedFilenames[0], 1)
+              }
               className="flex items-center gap-1.5 text-xs bg-zinc-900 border border-zinc-800/80 hover:bg-zinc-800 text-zinc-300 hover:text-zinc-100 px-3 py-1.5 rounded-lg transition-colors font-medium shadow-sm cursor-pointer"
               title="Visualizar el documento seleccionado"
             >
               <FileText className="h-3.5 w-3.5 text-indigo-400" />
-              {selectedDocIds.length === 1 ? "Ver documento" : "Ver primer documento"}
+              {selectedDocIds.length === 1
+                ? "Ver documento"
+                : "Ver primer documento"}
             </button>
           )}
         </div>
@@ -297,10 +329,18 @@ export default function ChatInterface({
       {/* Historial de Mensajes */}
       <div className="flex-1 overflow-y-auto p-8 space-y-6">
         <div className="max-w-3xl mx-auto space-y-6">
+
           {messages.map((msg, index) => {
             const isBot = msg.sender === "bot";
+
             return (
-              <div key={msg.id} className={`flex gap-4 ${isBot ? "justify-start" : "justify-end"}`}>
+              <div
+                key={msg.id}
+                className={`flex gap-4 ${
+                  isBot ? "justify-start" : "justify-end"
+                }`}
+              >
+
                 {/* Avatar */}
                 {isBot && (
                   <div className="h-8 w-8 rounded-lg bg-indigo-950/50 border border-indigo-500/20 flex items-center justify-center shrink-0">
@@ -309,6 +349,7 @@ export default function ChatInterface({
                 )}
 
                 <div className="max-w-xl space-y-3 min-w-0">
+
                   {/* Burbuja de Texto */}
                   <div
                     className={`rounded-2xl px-5 py-4 text-sm leading-relaxed border ${
@@ -317,25 +358,36 @@ export default function ChatInterface({
                         : "bg-indigo-600 border-indigo-500 text-white font-medium shadow-md shadow-indigo-950/25"
                     }`}
                   >
-                    {isBot ? renderFormattedText(msg.text, msg.sources) : msg.text}
+                    {isBot
+                      ? renderFormattedText(msg.text, msg.sources)
+                      : msg.text}
                   </div>
 
-                  {/* Latencias (solo para el bot y si se generó una respuesta RAG) */}
+                  {/* Latencias */}
                   {isBot && msg.latencyMs && (
-                    <LatencyDisplay latencies={msg.latencyMs} cragStatus={msg.cragStatus || ""} />
+                    <LatencyDisplay
+                      latencies={msg.latencyMs}
+                      cragStatus={msg.cragStatus || ""}
+                    />
                   )}
 
-                  {/* Fuentes y Citas (desplegable) */}
+                  {/* Fuentes y Citas */}
                   {isBot && msg.sources && msg.sources.length > 0 && (
                     <div className="border border-zinc-800/60 rounded-xl bg-zinc-950/20 overflow-hidden text-xs">
+
                       <button
-                        onClick={() => setOpenSourcesIdx(openSourcesIdx === index ? null : index)}
+                        onClick={() =>
+                          setOpenSourcesIdx(
+                            openSourcesIdx === index ? null : index
+                          )
+                        }
                         className="w-full flex items-center justify-between p-3 text-zinc-400 hover:text-zinc-200 transition-colors"
                       >
                         <span className="flex items-center gap-1.5 font-medium">
                           <FileText className="h-3.5 w-3.5 text-indigo-400" />
                           Fuentes utilizadas ({msg.sources.length})
                         </span>
+
                         {openSourcesIdx === index ? (
                           <ChevronUp className="h-4 w-4" />
                         ) : (
@@ -345,23 +397,39 @@ export default function ChatInterface({
 
                       {openSourcesIdx === index && (
                         <div className="border-t border-zinc-850 p-4 space-y-3 bg-zinc-950/40">
+
                           {msg.sources.map((src, sIdx) => (
-                            <div key={sIdx} className="bg-zinc-900/30 border border-zinc-800/40 rounded-xl p-3">
+                            <div
+                              key={sIdx}
+                              className="bg-zinc-900/30 border border-zinc-800/40 rounded-xl p-3"
+                            >
                               <div className="flex items-center justify-between text-zinc-400 font-semibold text-[10px] mb-2">
+
                                 <button
-                                  onClick={() => onOpenPdf(src.doc_id, src.filename, src.page_number)}
+                                  onClick={() =>
+                                    onOpenPdf(
+                                      src.doc_id,
+                                      src.filename,
+                                      src.page_number
+                                    )
+                                  }
                                   className="truncate max-w-[70%] hover:text-indigo-400 hover:underline text-left cursor-pointer transition-colors"
                                   title="Ver esta página en el visor"
                                 >
                                   {src.filename} (pág. {src.page_number})
                                 </button>
-                                <span className="text-indigo-400 font-mono">Rerank: {src.score}</span>
+
+                                <span className="text-indigo-400 font-mono">
+                                  Rerank: {src.score}
+                                </span>
                               </div>
+
                               <p className="text-[11px] text-zinc-500 leading-relaxed italic bg-zinc-950/10 p-2 rounded-lg border border-zinc-900/40">
                                 "{src.snippet}"
                               </p>
                             </div>
                           ))}
+
                         </div>
                       )}
                     </div>
@@ -378,18 +446,25 @@ export default function ChatInterface({
             );
           })}
 
-          {/* Loader del Bot al esperar respuesta */}
+          {/* Loader del Bot */}
           {loading && (
             <div className="flex gap-4 justify-start">
+
               <div className="h-8 w-8 rounded-lg bg-indigo-950/50 border border-indigo-500/20 flex items-center justify-center shrink-0">
                 <Bot className="h-4 w-4 text-indigo-400" />
               </div>
+
               <div className="max-w-xl space-y-3">
+
                 <div className="rounded-2xl px-5 py-4 border bg-zinc-900/40 border-zinc-800/80 text-zinc-400 text-sm">
+
                   <div className="flex items-center gap-2">
                     <Loader2 className="h-4 w-4 text-indigo-400 animate-spin" />
-                    <span>Consultando motor CRAG y generando respuesta...</span>
+                    <span>
+                      Consultando motor CRAG y generando respuesta...
+                    </span>
                   </div>
+
                 </div>
               </div>
             </div>
@@ -398,9 +473,15 @@ export default function ChatInterface({
           {error && (
             <div className="max-w-xl mx-auto my-4 bg-red-950/20 border border-red-900/50 p-4 rounded-xl flex items-center gap-3 text-red-400 text-sm">
               <AlertCircle className="h-5 w-5 shrink-0" />
+
               <div>
-                <p className="font-semibold">Error al obtener respuesta</p>
-                <p className="text-xs text-red-500/90 mt-0.5">{error}</p>
+                <p className="font-semibold">
+                  Error al obtener respuesta
+                </p>
+
+                <p className="text-xs text-red-500/90 mt-0.5">
+                  {error}
+                </p>
               </div>
             </div>
           )}
@@ -411,7 +492,11 @@ export default function ChatInterface({
 
       {/* Input de Chat */}
       <div className="p-8 border-t border-zinc-800/80 bg-zinc-950/10">
-        <form onSubmit={handleSend} className="max-w-3xl mx-auto relative">
+
+        <form
+          onSubmit={handleSend}
+          className="max-w-3xl mx-auto relative"
+        >
           <input
             type="text"
             value={input}
@@ -431,12 +516,14 @@ export default function ChatInterface({
             disabled={!input.trim() || loading}
             className="absolute right-3.5 top-3.5 p-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-850 disabled:text-zinc-600 text-white transition-all duration-300 shadow-md shadow-indigo-950/30"
           >
-            <Send className="h-4 w-4" />
+            <Send className="h-4 w-4 text-white" />
           </button>
         </form>
+
         <p className="text-[10px] text-zinc-600 text-center mt-3">
           Respuestas formuladas usando Corrective RAG (CRAG) con búsqueda híbrida y re-ranking local.
         </p>
+
       </div>
     </section>
   );

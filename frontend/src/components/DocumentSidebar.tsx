@@ -1,138 +1,88 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, Trash2, Search } from "lucide-react";
-import { uploadDocument, getDocumentStatus, listDocuments, deleteDocument, DocumentStatusResponse } from "../lib/api";
+import { Upload, FileText, Trash2, CheckCircle2, AlertCircle, Loader2, Search } from "lucide-react";
+import { fetchDocuments, uploadDocument, deleteDocument, TrackedDocument } from "../lib/api";
 
 interface DocumentSidebarProps {
-  onSelectionChange: (docIds: string[], filenames: string[]) => void;
   selectedDocIds: string[];
+  selectedFilenames: string[];
+  onSelectionChange: (docIds: string[], filenames: string[]) => void;
+  viewerPdf: { docId: string; filename: string; pageNumber: number; snippet?: string } | null;
 }
 
-interface TrackedDocument {
-  id: string;
-  filename: string;
-  status: string;
-  totalChunks: number | null;
-  errorMessage: string | null;
-}
-
-export default function DocumentSidebar({ onSelectionChange, selectedDocIds }: DocumentSidebarProps) {
-  const [dragActive, setDragActive] = useState(false);
+export default function DocumentSidebar({
+  selectedDocIds,
+  selectedFilenames,
+  onSelectionChange,
+  viewerPdf,
+}: DocumentSidebarProps) {
+  const [documents, setDocuments] = useState<TrackedDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [documents, setDocuments] = useState<TrackedDocument[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const activePollsRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
+  const pollingIntervals = useRef<{ [key: string]: NodeJS.Timeout }>({});
 
   useEffect(() => {
-    async function loadDocs() {
-      try {
-        const data = await listDocuments();
-        const formatted = data.map((d) => ({
-          id: d.document_id,
-          filename: d.filename,
-          status: d.status,
-          totalChunks: d.total_chunks,
-          errorMessage: d.error_message,
-        }));
-        setDocuments(formatted);
-
-        // Auto-seleccionar todos los documentos listos si no había una selección previa activa
-        if (selectedDocIds.length === 0) {
-          const completedDocs = formatted.filter((d) => d.status === "COMPLETED");
-          if (completedDocs.length > 0) {
-            onSelectionChange(
-              completedDocs.map((d) => d.id),
-              completedDocs.map((d) => d.filename)
-            );
-          }
-        }
-        
-        // Iniciar polling para documentos pendientes o procesándose
-        formatted.forEach((doc) => {
-          if (doc.status === "PENDING" || doc.status === "PROCESSING") {
-            startPolling(doc.id, doc.filename);
-          }
-        });
-      } catch (err: any) {
-        console.error("Error al inicializar documentos:", err);
-        setError("Error al cargar la lista de documentos del servidor.");
-      }
-    }
-    loadDocs();
-
-    // Limpiar todos los intervalos de polling al desmontar el componente
+    loadDocuments();
     return () => {
-      Object.values(activePollsRef.current).forEach((interval) => clearInterval(interval));
+      // Limpiar todos los intervalos activos al desmontar
+      Object.values(pollingIntervals.current).forEach(clearInterval);
     };
   }, []);
 
-  const startPolling = (docId: string, filename: string) => {
-    if (activePollsRef.current[docId]) {
-      clearInterval(activePollsRef.current[docId]);
+  // Si cambia el viewerPdf (citas clicadas en chat) y el documento no está seleccionado en el panel izquierdo,
+  // lo agregamos automáticamente a la selección para que el chat responda sobre él
+  useEffect(() => {
+    if (viewerPdf && !selectedDocIds.includes(viewerPdf.docId)) {
+      const nextDocIds = [...selectedDocIds, viewerPdf.docId];
+      const nextFilenames = [...selectedFilenames, viewerPdf.filename];
+      onSelectionChange(nextDocIds, nextFilenames);
     }
+  }, [viewerPdf]);
+
+  const loadDocuments = async () => {
+    try {
+      const data = await fetchDocuments();
+      setDocuments(data);
+
+      // Iniciar polling para documentos en estados no finales
+      data.forEach((doc) => {
+        if (doc.status === "PENDING" || doc.status === "PROCESSING") {
+          startPolling(doc.id, doc.filename);
+        }
+      });
+    } catch (err: any) {
+      setError(err.message || "Fallo al cargar documentos.");
+    }
+  };
+
+  const startPolling = (docId: string, filename: string) => {
+    if (pollingIntervals.current[docId]) return;
 
     const interval = setInterval(async () => {
       try {
-        const data = await getDocumentStatus(docId);
-        
-        setDocuments((prev) =>
-          prev.map((doc) =>
-            doc.id === docId
-              ? {
-                  ...doc,
-                  status: data.status,
-                  totalChunks: data.total_chunks,
-                  errorMessage: data.error_message,
-                }
-              : doc
-          )
-        );
+        const data = await fetchDocuments();
+        const updatedDoc = data.find((d) => d.id === docId);
 
-        if (data.status === "COMPLETED" || data.status === "FAILED") {
-          clearInterval(interval);
-          delete activePollsRef.current[docId];
+        if (updatedDoc) {
+          // Actualizar estado del documento localmente
+          setDocuments((prev) => prev.map((d) => (d.id === docId ? updatedDoc : d)));
+
+          // Si terminó el procesamiento (completo o fallido), detener el polling
+          if (updatedDoc.status === "COMPLETED" || updatedDoc.status === "FAILED") {
+            clearInterval(pollingIntervals.current[docId]);
+            delete pollingIntervals.current[docId];
+          }
         }
       } catch (err) {
-        console.error("Error polling document:", err);
+        console.error(`Error polling para documento ${filename}:`, err);
       }
-    }, 1500);
+    }, 2000); // Poll cada 2 segundos
 
-    activePollsRef.current[docId] = interval;
-  };
-
-  const handleDelete = async (docId: string, e: React.MouseEvent) => {
-    e.stopPropagation(); 
-    
-    if (!confirm("¿Estás seguro de que deseas eliminar este documento y todas sus citas asociadas?")) {
-      return;
-    }
-
-    try {
-      if (activePollsRef.current[docId]) {
-        clearInterval(activePollsRef.current[docId]);
-        delete activePollsRef.current[docId];
-      }
-
-      await deleteDocument(docId);
-      
-      // Actualizar listado local
-      const nextDocs = documents.filter((doc) => doc.id !== docId);
-      setDocuments(nextDocs);
-      
-      // Si el documento eliminado estaba seleccionado, quitarlo de la selección
-      if (selectedDocIds.includes(docId)) {
-        const nextDocIds = selectedDocIds.filter((id) => id !== docId);
-        const nextFilenames = nextDocs
-          .filter((d) => nextDocIds.includes(d.id))
-          .map((d) => d.filename);
-        onSelectionChange(nextDocIds, nextFilenames);
-      }
-    } catch (err: any) {
-      setError(err.message || "Error al eliminar documento.");
-    }
+    pollingIntervals.current[docId] = interval;
   };
 
   const handleToggleDocument = (docId: string, filename: string) => {
@@ -141,17 +91,42 @@ export default function DocumentSidebar({ onSelectionChange, selectedDocIds }: D
 
     if (selectedDocIds.includes(docId)) {
       nextDocIds = selectedDocIds.filter((id) => id !== docId);
+      nextFilenames = selectedFilenames.filter((name) => name !== filename);
     } else {
       nextDocIds = [...selectedDocIds, docId];
+      nextFilenames = [...selectedFilenames, filename];
     }
-
-    nextFilenames = documents
-      .filter((d) => nextDocIds.includes(d.id))
-      .map((d) => d.filename);
 
     onSelectionChange(nextDocIds, nextFilenames);
   };
 
+  const handleDelete = async (docId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("¿Estás seguro de que deseas eliminar este documento? Esta acción es irreversible.")) return;
+
+    try {
+      await deleteDocument(docId);
+
+      // Quitar de documentos activos localmente
+      setDocuments((prev) => prev.filter((d) => d.id !== docId));
+
+      // Limpiar polling si estaba activo
+      if (pollingIntervals.current[docId]) {
+        clearInterval(pollingIntervals.current[docId]);
+        delete pollingIntervals.current[docId];
+      }
+
+      // Quitar de la selección activa
+      const nextDocIds = selectedDocIds.filter((id) => id !== docId);
+      const nextFilenames = documents
+        .filter((d) => nextDocIds.includes(d.id))
+        .map((d) => d.filename);
+
+      onSelectionChange(nextDocIds, nextFilenames);
+    } catch (err: any) {
+      setError(err.message || "Fallo al eliminar documento.");
+    }
+  };
 
   const handleUpload = async (file: File) => {
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -184,6 +159,14 @@ export default function DocumentSidebar({ onSelectionChange, selectedDocIds }: D
           status: "PENDING",
         } : d)
       );
+      
+      // Auto-seleccionar agregando el nuevo documento
+      const nextDocIds = [...selectedDocIds, res.document_id];
+      const nextFilenames = [
+        ...documents.filter((d) => selectedDocIds.includes(d.id)).map((d) => d.filename),
+        file.name
+      ];
+      onSelectionChange(nextDocIds, nextFilenames);
       
       startPolling(res.document_id, file.name);
     } catch (err: any) {
