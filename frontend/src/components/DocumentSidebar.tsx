@@ -1,35 +1,67 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Upload, FileText, Trash2, CheckCircle2, AlertCircle, Loader2, Search } from "lucide-react";
-import { fetchDocuments, uploadDocument, deleteDocument, TrackedDocument } from "../lib/api";
+import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, Trash2, Search } from "lucide-react";
+import { uploadDocument, getDocumentStatus, listDocuments, deleteDocument } from "../lib/api";
 
 interface DocumentSidebarProps {
+  onSelectionChange: (docIds: string[], filenames: string[]) => void;
   selectedDocIds: string[];
   selectedFilenames: string[];
-  onSelectionChange: (docIds: string[], filenames: string[]) => void;
   viewerPdf: { docId: string; filename: string; pageNumber: number; snippet?: string } | null;
 }
 
+interface TrackedDocument {
+  id: string;
+  filename: string;
+  status: string;
+  totalChunks: number | null;
+  errorMessage: string | null;
+}
+
 export default function DocumentSidebar({
+  onSelectionChange,
   selectedDocIds,
   selectedFilenames,
-  onSelectionChange,
   viewerPdf,
 }: DocumentSidebarProps) {
-  const [documents, setDocuments] = useState<TrackedDocument[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dragActive, setDragActive] = useState(false);
+  const [documents, setDocuments] = useState<TrackedDocument[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pollingIntervals = useRef<{ [key: string]: NodeJS.Timeout }>({});
+  const activePollsRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
 
   useEffect(() => {
-    loadDocuments();
+    async function loadDocs() {
+      try {
+        const data = await listDocuments();
+        const formatted = data.map((d) => ({
+          id: d.document_id,
+          filename: d.filename,
+          status: d.status,
+          totalChunks: d.total_chunks,
+          errorMessage: d.error_message,
+        }));
+        setDocuments(formatted);
+
+        // Iniciar polling para documentos pendientes o procesándose
+        formatted.forEach((doc) => {
+          if (doc.status === "PENDING" || doc.status === "PROCESSING") {
+            startPolling(doc.id, doc.filename);
+          }
+        });
+      } catch (err: any) {
+        console.error("Error al inicializar documentos:", err);
+        setError("Error al cargar la lista de documentos del servidor.");
+      }
+    }
+    loadDocs();
+
+    // Limpiar todos los intervalos de polling al desmontar
     return () => {
-      // Limpiar todos los intervalos activos al desmontar
-      Object.values(pollingIntervals.current).forEach(clearInterval);
+      Object.values(activePollsRef.current).forEach((interval) => clearInterval(interval));
     };
   }, []);
 
@@ -43,46 +75,38 @@ export default function DocumentSidebar({
     }
   }, [viewerPdf]);
 
-  const loadDocuments = async () => {
-    try {
-      const data = await fetchDocuments();
-      setDocuments(data);
-
-      // Iniciar polling para documentos en estados no finales
-      data.forEach((doc) => {
-        if (doc.status === "PENDING" || doc.status === "PROCESSING") {
-          startPolling(doc.id, doc.filename);
-        }
-      });
-    } catch (err: any) {
-      setError(err.message || "Fallo al cargar documentos.");
-    }
-  };
-
   const startPolling = (docId: string, filename: string) => {
-    if (pollingIntervals.current[docId]) return;
+    if (activePollsRef.current[docId]) {
+      clearInterval(activePollsRef.current[docId]);
+    }
 
     const interval = setInterval(async () => {
       try {
-        const data = await fetchDocuments();
-        const updatedDoc = data.find((d) => d.id === docId);
+        const data = await getDocumentStatus(docId);
+        
+        setDocuments((prev) =>
+          prev.map((doc) =>
+            doc.id === docId
+              ? {
+                  ...doc,
+                  status: data.status,
+                  totalChunks: data.total_chunks,
+                  errorMessage: data.error_message,
+                }
+              : doc
+          )
+        );
 
-        if (updatedDoc) {
-          // Actualizar estado del documento localmente
-          setDocuments((prev) => prev.map((d) => (d.id === docId ? updatedDoc : d)));
-
-          // Si terminó el procesamiento (completo o fallido), detener el polling
-          if (updatedDoc.status === "COMPLETED" || updatedDoc.status === "FAILED") {
-            clearInterval(pollingIntervals.current[docId]);
-            delete pollingIntervals.current[docId];
-          }
+        if (data.status === "COMPLETED" || data.status === "FAILED") {
+          clearInterval(interval);
+          delete activePollsRef.current[docId];
         }
       } catch (err) {
-        console.error(`Error polling para documento ${filename}:`, err);
+        console.error("Error polling document:", err);
       }
-    }, 2000); // Poll cada 2 segundos
+    }, 2000);
 
-    pollingIntervals.current[docId] = interval;
+    activePollsRef.current[docId] = interval;
   };
 
   const handleToggleDocument = (docId: string, filename: string) => {
@@ -111,16 +135,16 @@ export default function DocumentSidebar({
       setDocuments((prev) => prev.filter((d) => d.id !== docId));
 
       // Limpiar polling si estaba activo
-      if (pollingIntervals.current[docId]) {
-        clearInterval(pollingIntervals.current[docId]);
-        delete pollingIntervals.current[docId];
+      if (activePollsRef.current[docId]) {
+        clearInterval(activePollsRef.current[docId]);
+        delete activePollsRef.current[docId];
       }
 
       // Quitar de la selección activa
       const nextDocIds = selectedDocIds.filter((id) => id !== docId);
-      const nextFilenames = documents
-        .filter((d) => nextDocIds.includes(d.id))
-        .map((d) => d.filename);
+      const nextFilenames = selectedFilenames.filter(
+        (name) => name !== documents.find((d) => d.id === docId)?.filename
+      );
 
       onSelectionChange(nextDocIds, nextFilenames);
     } catch (err: any) {
