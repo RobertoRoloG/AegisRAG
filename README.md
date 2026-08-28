@@ -1,147 +1,139 @@
-<h1 align="center">AegisRAG</h1>
+# AEGIS - Asistente RAG Multifuente con Personalidad de Aegisito (Pack Portable)
 
-<p align="center">
-  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/Next.js-000000?style=flat-square&logo=nextdotjs&logoColor=white" alt="Next.js" />
-  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Celery-356C40?style=flat-square&logo=celery&logoColor=white" alt="Celery" />
-  <img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" />
-  <img src="https://img.shields.io/badge/Qdrant-FF4154?style=flat-square&logo=qdrant&logoColor=white" alt="Qdrant" />
-  <img src="https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white" alt="Redis" />
-  <img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" />
-</p>
+Este es el backend y el panel de control local del asistente inteligente RAG (*Retrieval-Augmented Generation*) para **AEGIS** (Programas de facturación y gestión contable).
 
-## Overview
-AegisRAG is a production-grade, full-stack Corrective Retrieval-Augmented Generation (CRAG) system designed to mitigate hallucination and context irrelevance in LLM applications. Built on a decoupled microservices architecture, it orchestrates hybrid vector-lexical queries, context re-ranking, and dynamic self-correction loops to ensure accurate, verified context feeds generation.
-
-## Tech Stack
-*   **Backend:** Python 3.11+, FastAPI (ASGI Framework), Celery (Distributed Task Queue), SQLAlchemy 2.0 (Async ORM), FastEmbed (Local Embeddings & Reranking), PyPDF (Document Parsing).
-*   **Frontend:** Next.js 16 (App Router), TypeScript, React 19, Tailwind CSS 4, Lucide React.
-*   **Databases & Caches:** PostgreSQL 16 (Relational Metadata & History), Qdrant v1.18.2 (Vector Database supporting dense/sparse hybrid search), Redis 7 (Asynchronous Message Broker & Cache).
-*   **Infrastructure & Deployment:** Docker, Docker Compose.
-
-## Key Features
-*   **Corrective RAG (CRAG) Pipeline:** Self-corrective pipeline with automated query rewriting and dynamic relevance thresholding (default `0.35` Cross-Encoder score) to filter out hallucinated context.
-*   **Hybrid Semantic-Lexical Search:** Combines dense vectors (embedding-based search) and sparse vectors (BM25 keyword search) natively within Qdrant.
-*   **Two-Stage Retrieval & Re-ranking:** Integrates a second-pass context optimization layer powered by `BAAI/bge-reranker-base`.
-*   **Asynchronous Ingestion Queue:** Decoupled document processing (PDF parsing and chunking) using Celery background workers to keep API endpoints non-blocking.
-*   **Multi-LLM Integration:** Pluggable support for local LLMs via Ollama (e.g., Llama 3) or commercial APIs including OpenAI and Groq.
-*   **Session & History Tracking:** Persistent relational storage for chat sessions, message histories, and extraction metadata.
-
-## Prerequisites
-*   **OS:** Linux, macOS, or Windows (WSL 2 or PowerShell recommended)
-*   **Python:** `v3.11` or higher
-*   **Node.js:** `v20.x` or higher (with `npm` package manager)
-*   **Docker:** Engine `v20.10+` and Docker Compose `v2.0+`
-
-## Installation & Setup
-1.  **Clone the Repository:**
-    ```bash
-    git clone https://github.com/RobertoRoloG/AegisRAG.git
-    cd AegisRAG
-    ```
-
-2.  **Configure Environment Variables:**
-    Copy the template file to `.env` in the root and in the `backend/` directory, then adjust configuration (e.g. your `GROQ_API_KEY`):
-    ```bash
-    # Root
-    cp .env.example .env
-    # Backend
-    cp .env.example backend/.env
-    ```
-    Key environment variables:
-    *   `POSTGRES_PORT`: Host port (default `5433`).
-    *   `QDRANT_PORT` / `QDRANT_GRPC_PORT`: Vector DB ports (default `6333` / `6334`).
-    *   `REDIS_PORT` / `REDIS_URL`: Redis port (default `6380`).
-    *   `LLM_PROVIDER`: Provider (`groq`, `ollama`, or `openai`).
-    *   `LLM_MODEL`: Target model (e.g., `openai/gpt-oss-20b` for Groq, `llama3.1` for Ollama).
-    *   `GROQ_API_KEY`: Required if using Groq cloud inference.
-
-3.  **Start Services (Infrastructure Stack):**
-    Spin up PostgreSQL, Qdrant, and Redis containers:
-    ```bash
-    docker compose up -d
-    ```
-
-4.  **Set Up Backend (FastAPI & Celery):**
-    Initialize a virtual environment, install dependencies, and run database migrations:
-    ```bash
-    cd backend
-    python -m venv .venv
-    
-    # Windows (PowerShell):
-    .venv\Scripts\Activate.ps1
-    # Linux / macOS:
-    source .venv/bin/activate
-
-    pip install --upgrade pip
-    pip install -r requirements.txt
-
-    # Apply database migrations:
-    alembic upgrade head
-    ```
-
-5.  **Set Up Frontend (Next.js):**
-    Install client node packages:
-    ```bash
-    cd ../frontend
-    npm install
-    ```
-
-## Usage / Execution
-Run the services across 3 separate terminal sessions:
-
-1.  **Backend API Server (Terminal 1):**
-    ```bash
-    cd backend
-    # Activate virtual environment
-    .venv\Scripts\activate      # Windows
-    # source .venv/bin/activate # Linux/macOS
-    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-    ```
-
-2.  **Celery Ingestion Worker (Terminal 2):**
-    ```bash
-    cd backend
-    # Activate virtual environment
-    # Windows (CRITICAL: always use --pool=solo on Windows):
-    .venv\Scripts\celery.exe -A app.workers.celery_app worker --loglevel=info --pool=solo
-    # Linux / macOS:
-    celery -A app.workers.celery_app worker --loglevel=info
-    ```
-
-3.  **Frontend Client (Terminal 3):**
-    ```bash
-    cd frontend
-    npm run dev
-    ```
-
-4.  **Access Main Endpoints:**
-    *   **Frontend UI:** [http://localhost:3000](http://localhost:3000)
-    *   **Swagger API Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
-    *   **Backend Health Check:** [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
+El sistema es completamente **portable** y dinámico. Al utilizar rutas relativas y variables cargadas de forma local, puedes mover esta carpeta completa a cualquier ordenador y funcionará sin tener que alterar las configuraciones internas de Windows.
 
 ---
 
-## ⚡ Important Notes & Troubleshooting
+## 🛠️ Arquitectura y Tecnologías
+* **Motor Backend:** Python 3.14+ con FastAPI (asíncrono).
+* **Motor CRAG (Corrective RAG):** Búsqueda híbrida (densa con `BAAI/bge-small-en-v1.5` + esparsa con `SPLADE`) y re-ranking con Cross-Encoder (`BAAI/bge-reranker-base`).
+* **Base de Datos Vectorial:** Qdrant (almacén persistente de embeddings para PDFs y fragmentos temporales de vídeo con panel en `http://localhost:6333/dashboard`).
+* **Cola de Ingesta Asíncrona:** Celery (con Redis como broker de tareas en segundo plano).
+* **Base de Datos Relacional:** PostgreSQL 16 (metadatos de documentos, vídeos, historial y estado de procesamiento).
+* **LLM:** Groq LPU (`llama-3.1-8b-instant`) para respuestas ultra rápidas con citas inline obligatorias.
+* **Frontend:** Next.js 15 + React 19 + TailwindCSS (panel de gestión de documentos, reproductor de citas y chat interactivo).
+* **Controlador de Túnel:** Ngrok (para exponer el servidor local a internet y conectar la web externa).
 
-### 1. First PDF Upload Duration (One-Time Model Download)
-* The **very first time** a document is uploaded, FastEmbed automatically downloads the local embedding model weights (`BAAI/bge-small-en-v1.5` ~130MB) and sparse BM25 tokenizers from HuggingFace to your local cache.
-* During this initial download, document processing will appear to take ~30–60 seconds.
-* **Subsequent uploads will take ~1–2 seconds**, as models are cached locally.
+---
 
-### 2. Windows Celery Concurrency (`--pool=solo`)
-* Celery under Windows does not support `fork()`. Running Celery without `--pool=solo` will lead to worker deadlocks or task freezes during ingestion. Always include `--pool=solo` on Windows.
+## 🚀 Requisitos para Servidor Local (Otro Ordenador)
+Si quieres copiar este proyecto a otro ordenador (por ejemplo, mediante un pendrive) para que actúe como servidor local conectado a la web, ese ordenador debe tener instalado previamente:
 
-### 3. Port Mappings
-To prevent collisions with existing system databases, AegisRAG runs with custom host ports:
-* PostgreSQL: `5433` (mapped from container `5432`)
-* Redis: `6380` (mapped from container `6379`)
-* Qdrant: `6333` (HTTP) / `6334` (gRPC)
+1. **Docker Desktop** (para arrancar PostgreSQL, Qdrant y Redis).
+2. **Python 3.14+** (instalado de forma global en Windows, marcando la opción *"Add python.exe to PATH"* en el instalador).
+3. **Node.js y npm** (versión 20+ para compilar y ejecutar el frontend).
 
-## Roadmap
-- [ ] Add support for additional file formats (`.docx`, `.md`, `.txt`, `.html`).
-- [ ] Implement Server-Sent Events (SSE) for streaming model generation.
-- [ ] Integrate JWT authentication and Role-Based Access Control (RBAC).
-- [ ] Optimize Docker configuration using multi-stage production builds.
-- [ ] Integrate retrieval evaluation frameworks (Ragas / TruLens) to monitor retrieval quality.
+---
+
+## 📋 Pasos de Configuración en el Nuevo Ordenador
+
+### Paso 1: Copiar la carpeta y el archivo `.env`
+Copia la carpeta entera `AEGIS` al disco local del nuevo ordenador (se recomienda el Escritorio para mayor velocidad).
+> [!IMPORTANT]  
+> Asegúrate de que el archivo `.env` esté dentro de la carpeta `backend/`. Debe contener la configuración de puertos, tokens y claves de API de los proveedores de LLM:
+> ```env
+> POSTGRES_PORT=5433
+> REDIS_PORT=6380
+> CORS_ORIGINS=["http://localhost:3000", "http://localhost:8000", "https://aegisformacion.com"]
+> NGROK_AUTHTOKEN=tu_token_de_ngrok_aqui
+> YOUTUBE_CHANNEL_ID=UCoZWQl3d034u8OIqnEGEnXA
+> 
+> # Claves de API de los proveedores de LLM (pueden coexistir en el archivo)
+> GROQ_API_KEY=gsk_tu_clave_de_groq_aqui
+> GEMINI_API_KEY=tu_clave_de_gemini_aqui
+> DEEPSEEK_API_KEY=tu_clave_de_deepseek_aqui
+> 
+> # Configuración del LLM activo
+> LLM_PROVIDER=gemini # Opciones: groq, gemini, deepseek
+> LLM_MODEL=gemini-3.6-flash # Ejemplos: openai/gpt-oss-120b (Groq), gemini-3.6-flash (Gemini), deepseek-chat (DeepSeek)
+> 
+> # NOTA DE SEGURIDAD: Google retira modelos antiguos periódicamente. 
+> # Antes de configurar LLM_MODEL para Gemini, comprueba la lista oficial de modelos vigentes en:
+> # https://ai.google.dev/gemini-api/docs/models?hl=es-419
+> ```
+
+### Paso 2: Colocar Ngrok
+Descarga Ngrok para Windows y extrae el archivo **`ngrok.exe`** directamente en la raíz de esta carpeta (en el mismo nivel donde está `start_aegis.bat`). 
+
+*(El script `.bat` leerá automáticamente la variable `NGROK_AUTHTOKEN` de tu `.env` local antes de abrir el túnel).*
+
+### Paso 3: Crear el Entorno Virtual e Instalar Librerías (Solo la primera vez)
+Abre una consola (CMD) en la raíz del proyecto y ejecuta:
+
+1. **Backend (Python .venv):**
+   ```cmd
+   cd backend
+   python -m venv .venv
+   .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+2. **Frontend (Node.js):**
+   ```cmd
+   cd ../frontend
+   npm install
+   ```
+
+### Paso 4: Arrancar los servicios
+1. Abre **Docker Desktop** en el nuevo ordenador.
+2. Ejecuta el archivo **`start_aegis.bat`** haciendo doble clic.
+3. Se abrirán las terminales independientes levantando las bases de datos en Docker, el worker de Celery, el Backend de FastAPI, el Frontend en Next.js y el túnel seguro de Ngrok.
+
+---
+
+## 💻 Panel de Control y Chat (http://localhost:3000)
+
+Una vez arrancado, entra en [http://localhost:3000](http://localhost:3000) para acceder al panel integral:
+
+### 1. Gestión de Manuales PDF
+* **Subida por arrastre (*Drag & Drop*):** Sube manuales PDF para procesamiento asíncrono con extracción de texto y OCR automático.
+* **Visor Interactivo Lateral:** Al hacer clic en citas del PDF (`[archivo.pdf, pág. X]`), se abre el visor lateral derecho en la página exacta con resaltado visual del fragmento.
+
+### 2. Sincronización de Videotutoriales de YouTube
+* **Ingestión Dinámica de Canales:** Introduce un ID o URL de canal de YouTube (o pulsa *Sincronizar* para usar el configurado en `.env`).
+* **Extracción de Transcripciones y Timestamps:** El worker descarga los subtítulos, los fragmenta en bloques temporales de 90 segundos y los indexa en Qdrant.
+* **Apertura Directa al Segundo Exacto:** Al pulsar en citas de vídeo (`[Video: Título, seg. X]`) o en el botón superior *Ver tutorial en YouTube*, se abre la plataforma oficial de YouTube en el segundo concreto donde se explica el concepto.
+
+### 3. Selección y Filtros Inteligentes
+* **Casillas Maestras de Selección:** Checkboxes en los encabezados para seleccionar o deseleccionar todos los PDFs o todos los videotutoriales con contadores activos.
+* **Síntesis Multifuente:** Si marcas tanto manuales PDF como vídeos, Aegisito fusiona ambas fuentes en una sola respuesta detallada y cita cada dato en su contexto.
+
+---
+
+## 🔍 Herramientas de Inspección y Diagnóstico
+* **Panel de Qdrant (Base Vectorial):** [http://localhost:6333/dashboard](http://localhost:6333/dashboard) (colección `aegis_chunks`).
+* **Documentación Interactiva de la API (Swagger):** [http://localhost:8000/docs](http://localhost:8000/docs).
+* **Verificación de Salud:** `GET http://localhost:8000/api/v1/health`.
+
+---
+
+## 🛠️ Solución de Problemas en Indexación de Vídeos (YouTube)
+
+YouTube bloquea de forma muy agresiva las solicitudes automatizadas sin cookies de sesión (dando el error `IP blocked / Rate Limit` en los logs del worker de Celery). Para solucionarlo o saltártelo si algún vídeo falla:
+
+### Opción A: Configurar Cookies de Sesión (Recomendado)
+1. Instala la extensión **[Cookie-Editor](https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhgoadkfgghfacnekggghhj)** en Chrome/Edge.
+2. Ve a [youtube.com](https://www.youtube.com) (con tu cuenta logueada).
+3. Abre la extensión, haz clic en **Export** y selecciona **Netscape** (copiará las cookies al portapapeles).
+4. Crea un archivo llamado `youtube_cookies.txt` en la carpeta `backend/` y pega el contenido.
+5. El worker de Celery leerá las cookies automáticamente en la siguiente descarga, evitando el baneo de IP.
+
+### Opción B: Indexación Manual por Transcripción
+Si prefieres indexar un vídeo pegando su transcripción manualmente usando el formato estándar de YouTube (`0:00 \n Texto`):
+1. Copia la transcripción desde YouTube (*Mostrar transcripción*) o extráela de Gemini con `@YouTube`.
+2. Guarda el texto de la transcripción en un archivo temporal llamado `temp_trans.txt` en `backend/scratch/`.
+3. Ejecuta el indexador manual con el **ID del documento** correspondiente:
+   ```cmd
+   cd backend
+   python -c "import sys; sys.path.append('scratch'); from index_manual_transcript import index_manual_video; text = open('scratch/temp_trans.txt', encoding='utf-8').read(); index_manual_video('ID_DEL_DOCUMENTO', text)"
+   ```
+
+### Recargar Documentos Atascados
+Si tras un reinicio del backend o una caída del sistema algunos archivos o vídeos se han quedado atascados en estado `PROCESSING` o `PENDING` de forma perpetua:
+```cmd
+cd backend
+python scratch/requeue_processing.py
+```
+Este script buscará los documentos pendientes o a medias, restablecerá su estado y los volverá a enviar a la cola de Celery automáticamente.
+

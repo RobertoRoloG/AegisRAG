@@ -1,5 +1,5 @@
 """
-AegisRAG — Servicio de Re-Ranking.
+AEGIS — Servicio de Re-Ranking.
 
 Usa un modelo local Cross-Encoder (vía FastEmbed) para evaluar la
 relevancia de los fragmentos recuperados en relación a la consulta.
@@ -15,29 +15,13 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# ── Instancia global de Cross-Encoder (singleton lazy) ─────
-_reranker_model: TextCrossEncoder | None = None
-
-
-def _get_reranker_model() -> TextCrossEncoder:
-    """
-    Retorna el singleton del modelo Cross-Encoder.
-    La primera llamada descarga el modelo si no está en la caché local.
-    """
-    global _reranker_model
-    if _reranker_model is None:
-        logger.info("Cargando modelo Cross-Encoder Reranker: %s", settings.reranker_model)
-        _reranker_model = TextCrossEncoder(model_name=settings.reranker_model)
-        logger.info("Reranker cargado correctamente")
-    return _reranker_model
-
-
 class ReRankerService:
     """Clase de negocio para evaluar la relevancia de los fragmentos."""
 
     def __init__(self) -> None:
-        # Forzar inicialización del modelo al instanciar el servicio
-        self.model = _get_reranker_model()
+        logger.info("Cargando modelo Cross-Encoder Reranker de forma inicial: %s", settings.reranker_model)
+        self.model = TextCrossEncoder(model_name=settings.reranker_model)
+        logger.info("Reranker cargado correctamente")
 
     def rerank(self, query: str, documents: list[dict], top_n: int = 3) -> list[dict]:
         """

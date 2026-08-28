@@ -1,5 +1,5 @@
 -- ============================================================
--- AegisRAG — Inicialización de PostgreSQL
+-- AEGIS — Inicialización de PostgreSQL
 -- Se ejecuta automáticamente en el primer arranque del contenedor.
 -- ============================================================
 

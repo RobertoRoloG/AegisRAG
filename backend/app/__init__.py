@@ -1,1 +1,1 @@
-# Paquete raíz de la aplicación AegisRAG
+# Paquete raíz de la aplicación AEGIS

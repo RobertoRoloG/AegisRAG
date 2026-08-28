@@ -1,5 +1,5 @@
 # ============================================================
-# AegisRAG — Docker Compose (Fase 1: Infraestructura)
+# AEGIS — Docker Compose (Fase 1: Infraestructura)
 # Servicios: PostgreSQL 16, Qdrant v1.18, Redis 7
 # ============================================================
 
@@ -10,19 +10,19 @@ services:
   # ----------------------------------------------------------
   postgres:
     image: postgres:16-alpine
-    container_name: aegisrag-postgres
+    container_name: AEGIS-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-aegisrag}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aegisrag_secret}
-      POSTGRES_DB: ${POSTGRES_DB:-aegisrag}
+      POSTGRES_USER: ${POSTGRES_USER:-AEGIS}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-AEGIS_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-AEGIS}
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aegisrag} -d ${POSTGRES_DB:-aegisrag}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-AEGIS} -d ${POSTGRES_DB:-AEGIS}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -35,7 +35,7 @@ services:
   # ----------------------------------------------------------
   qdrant:
     image: qdrant/qdrant:v1.18.2
-    container_name: aegisrag-qdrant
+    container_name: AEGIS-qdrant
     restart: unless-stopped
     ports:
       - "${QDRANT_PORT:-6333}:6333"
@@ -56,7 +56,7 @@ services:
   # ----------------------------------------------------------
   redis:
     image: redis:7-alpine
-    container_name: aegisrag-redis
+    container_name: AEGIS-redis
     restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6380}:6379"

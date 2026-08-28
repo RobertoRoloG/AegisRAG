@@ -1,5 +1,5 @@
 """
-AegisRAG — Servicio LLM centralizado.
+AEGIS — Servicio LLM centralizado.
 
 Soporta:
 1. OpenAI (Cloud comercial)
@@ -26,8 +26,10 @@ class LLMService:
         self.base_url = settings.ollama_base_url
         self.openai_key = settings.openai_api_key
         self.groq_key = settings.groq_api_key
+        self.gemini_key = settings.gemini_api_key
+        self.deepseek_key = settings.deepseek_api_key
 
-        # Validar conectividad con Ollama, OpenAI o Groq, si no hay, caemos en Mock automáticamente
+        # Validar conectividad con los proveedores activos, si no hay credenciales, cae en Mock
         self._detect_best_provider()
 
     def _detect_best_provider(self) -> None:
@@ -38,6 +40,14 @@ class LLMService:
 
         elif self.provider == "groq" and not self.groq_key:
             logger.warning("GROQ_API_KEY no configurada. Activando proveedor 'mock' para desarrollo local.")
+            self.provider = "mock"
+
+        elif self.provider == "gemini" and not self.gemini_key:
+            logger.warning("GEMINI_API_KEY no configurada. Activando proveedor 'mock' para desarrollo local.")
+            self.provider = "mock"
+
+        elif self.provider == "deepseek" and not self.deepseek_key:
+            logger.warning("DEEPSEEK_API_KEY no configurada. Activando proveedor 'mock' para desarrollo local.")
             self.provider = "mock"
         
         elif self.provider == "ollama":
@@ -67,6 +77,10 @@ class LLMService:
             return await self._call_openai(prompt, system_prompt)
         elif self.provider == "groq":
             return await self._call_groq(prompt, system_prompt)
+        elif self.provider == "gemini":
+            return await self._call_gemini(prompt, system_prompt)
+        elif self.provider == "deepseek":
+            return await self._call_deepseek(prompt, system_prompt)
         elif self.provider == "ollama":
             return await self._call_ollama(prompt, system_prompt)
         elif self.provider == "mock":
@@ -74,21 +88,32 @@ class LLMService:
         else:
             raise ValueError(f"Proveedor de LLM no soportado: '{self.provider}'")
 
-    async def rewrite_query(self, query: str) -> str:
-        """Reescribe una consulta de usuario para optimizar la recuperación semántica."""
+    async def rewrite_query(self, query: str, history: list[dict[str, str]] | None = None) -> str:
+        """Reescribe una consulta de usuario para optimizar la recuperación semántica con contexto conversacional."""
         if self.provider == "mock":
             # Mock de reescritura simple agregando sinónimos de RAG
             logger.info("Mocking query rewrite...")
             return f"{query} Hybrid Search Retrieval Corrective RAG"
 
+        history_str = ""
+        if history:
+            history_lines = []
+            for t in history[-4:]:
+                role_label = 'Usuario' if t.get('role') == 'user' else 'Aegisito'
+                content = t.get('content', '')
+                if len(content) > 400:
+                    content = content[:400] + "..."
+                history_lines.append(f"{role_label}: {content}")
+            history_str = f"Historial de conversación previo:\n" + "\n".join(history_lines) + "\n\n"
+
         system_prompt = (
             "Eres un asistente de recuperación de información de nivel experto. "
-            "Tu tarea es analizar la consulta del usuario y reescribirla de forma clara, "
-            "eliminando ambigüedades y añadiendo términos clave relacionados para mejorar "
-            "la búsqueda semántica y de palabras clave. "
-            "Devuelve ÚNICAMENTE la consulta reescrita, sin introducciones ni comentarios."
+            "Tu tarea es analizar la consulta del usuario (y el historial si lo hay) y reescribirla de forma clara, "
+            "eliminando ambigüedades, reemplazando pronombres ('eso', 'el anterior', 'lo') por los conceptos reales "
+            "y añadiendo términos clave relacionados de los programas AEGIS para mejorar la búsqueda semántica. "
+            "Devuelve ÚNICAMENTE la consulta reescrita, sin introducciones, sin explicaciones y sin comillas."
         )
-        prompt = f"Consulta original: {query}"
+        prompt = f"{history_str}Consulta del usuario a reformular: {query}"
         
         try:
             rewritten = await self.generate_response(prompt, system_prompt)
@@ -154,11 +179,10 @@ class LLMService:
             "Content-Type": "application/json",
         }
         
-        # Mapear modelos estándar a modelos activos de Groq
-        # Groq no soporta modelos genéricos como 'llama3', requiere nombres específicos
+        # Mapear modelos estándar a modelos activos y soportados en Groq
         groq_model = self.model
-        if groq_model in ["llama3", "llama3.2", "llama", "llama-3.1-8b-instant"]:
-            groq_model = "openai/gpt-oss-20b"
+        if groq_model in ["llama3", "llama", "llama-3", "mock", "llama-3.1-8b-instant"]:
+            groq_model = "openai/gpt-oss-120b"
 
         messages = []
         if system_prompt:
@@ -168,8 +192,79 @@ class LLMService:
         payload = {
             "model": groq_model,
             "messages": messages,
-            "temperature": 0.0,
+            "temperature": 0.1,
+            "max_tokens": 2048,
         }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                msg_obj = data["choices"][0]["message"]
+                content = msg_obj.get("content") or msg_obj.get("reasoning") or ""
+                return str(content).strip()
+            except Exception as exc:
+                logger.error("Error conectando con Groq: %s", exc)
+                raise
+
+    async def _call_gemini(self, prompt: str, system_prompt: str) -> str:
+        """Realiza una llamada asíncrona a la API de Google AI Studio (Gemini)."""
+        gemini_model = self.model
+        if gemini_model in ["gemini", "mock", "openai/gpt-oss-120b", "llama3", "llama-3.1-8b-instant", "deepseek-chat"]:
+            gemini_model = "gemini-3.6-flash"
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={self.gemini_key}"
+        
+        payload = {
+            "contents": [
+                {
+                    "parts": [{"text": prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.1
+            }
+        }
+        
+        if system_prompt:
+            payload["systemInstruction"] = {
+                "parts": [{"text": system_prompt}]
+            }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                return str(data["candidates"][0]["content"]["parts"][0]["text"]).strip()
+            except Exception as exc:
+                logger.error("Error conectando con Gemini: %s", exc)
+                raise
+
+    async def _call_deepseek(self, prompt: str, system_prompt: str) -> str:
+        """Realiza una llamada asíncrona a la API oficial de DeepSeek (compatible con OpenAI)."""
+        ds_model = self.model
+        if ds_model in ["deepseek", "mock", "openai/gpt-oss-120b", "llama3", "llama-3.1-8b-instant", "gemini-1.5-flash"]:
+            ds_model = "deepseek-chat"
+
+        url = "https://api.deepseek.com/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.deepseek_key}",
+            "Content-Type": "application/json",
+        }
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": ds_model,
+            "messages": messages,
+            "temperature": 0.1,
+            "max_tokens": 2048,
+        }
+        
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
                 response = await client.post(url, headers=headers, json=payload)
@@ -177,7 +272,7 @@ class LLMService:
                 data = response.json()
                 return str(data["choices"][0]["message"]["content"]).strip()
             except Exception as exc:
-                logger.error("Error conectando con Groq: %s", exc)
+                logger.error("Error conectando con DeepSeek: %s", exc)
                 raise
 
     async def _call_mock(self, prompt: str) -> str:
@@ -210,7 +305,7 @@ class LLMService:
         answer_parts = []
         if "implement" in prompt.lower() or "what" in prompt.lower():
             answer_parts.append(
-                f"De acuerdo a la documentación, AegisRAG implementa Búsqueda Híbrida y Re-Ranking "
+                f"De acuerdo a la documentación, AEGIS implementa Búsqueda Híbrida y Re-Ranking "
                 f"junto con un sistema de Ingestión Asíncrona [{files_found[0][0]}, pág. {files_found[0][1]}]."
             )
             if len(files_found) > 1:

@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import dynamic from "next/dynamic";
-import DocumentSidebar from "../components/DocumentSidebar";
+import DocumentSidebar, { TrackedDocument } from "../components/DocumentSidebar";
 import ChatInterface from "../components/ChatInterface";
 
 const PdfViewer = dynamic(() => import("../components/PdfViewer"), {
@@ -10,8 +10,6 @@ const PdfViewer = dynamic(() => import("../components/PdfViewer"), {
 });
 
 export default function Home() {
-  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
-  const [selectedFilenames, setSelectedFilenames] = useState<string[]>([]);
   const [viewerPdf, setViewerPdf] = useState<{
     docId: string;
     filename: string;
@@ -20,20 +18,19 @@ export default function Home() {
   } | null>(null);
   const [highlightEnabled, setHighlightEnabled] = useState(true);
 
-  const handleSelectionChange = (docIds: string[], filenames: string[]) => {
-    setSelectedDocIds(docIds);
-    setSelectedFilenames(filenames);
-    
-    // Si ya no quedan documentos seleccionados en la lista, cerramos el visor
-    if (docIds.length === 0) {
-      setViewerPdf(null);
-    } else if (viewerPdf && !docIds.includes(viewerPdf.docId)) {
-      // Si el documento que estábamos visualizando se deseleccionó, abrimos la página 1 del primer seleccionado
-      setViewerPdf({ docId: docIds[0], filename: filenames[0], pageNumber: 1 });
+  const handleOpenPdf = (docId: string, filename: string, pageNumber: number, snippet?: string, type: "pdf" | "youtube" = "pdf", videoId?: string) => {
+    if (type === "youtube" || videoId) {
+      let ytUrl = "";
+      if (videoId && videoId.includes("youtube.com")) {
+        ytUrl = videoId;
+      } else {
+        const vId = videoId || docId;
+        ytUrl = `https://www.youtube.com/watch?v=${vId}&t=${pageNumber}s`;
+      }
+      window.open(ytUrl, "_blank");
+      return;
     }
-  };
 
-  const handleOpenPdf = (docId: string, filename: string, pageNumber: number, snippet?: string) => {
     setViewerPdf({ docId, filename, pageNumber, snippet });
   };
 
@@ -49,21 +46,18 @@ export default function Home() {
       <div className="flex h-full w-full relative z-10">
         {/* Barra Lateral Izquierda (Documentos y Carga) */}
         <DocumentSidebar
-          onSelectionChange={handleSelectionChange}
-          selectedDocIds={selectedDocIds}
+          onOpenDocument={(docId, filename, type, filePath) => handleOpenPdf(docId, filename, 1, undefined, type, filePath)}
         />
 
         {/* Ventana de Chat Conversacional RAG */}
         <ChatInterface
-          selectedDocIds={selectedDocIds}
-          selectedFilenames={selectedFilenames}
           onOpenPdf={handleOpenPdf}
           viewerPdf={viewerPdf}
           highlightEnabled={highlightEnabled}
           onToggleHighlight={handleToggleHighlight}
         />
 
-        {/* Panel Visor de PDF Interactivo Lateral Derecho */}
+        {/* Panel Visor Interactivo Lateral Derecho (PDF) */}
         {viewerPdf && (
           <PdfViewer
             docId={viewerPdf.docId}
@@ -79,3 +73,4 @@ export default function Home() {
     </div>
   );
 }
+

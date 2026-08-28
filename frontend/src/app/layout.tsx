@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AegisRAG — Corrective RAG Platform",
+  title: "AEGIS — Corrective RAG Platform",
   description: "Enterprise Corrective RAG system with Hybrid Search, Re-Ranking, and Asynchronous Ingestion.",
 };
 

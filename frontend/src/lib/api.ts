@@ -1,5 +1,5 @@
 // ============================================================
-// AegisRAG — Cliente API Frontend
+// AEGIS — Cliente API Frontend
 // Interacciones HTTP asíncronas con el backend en puerto 8000
 // ============================================================
 
@@ -27,6 +27,8 @@ export interface SourceDocument {
   page_number: number;
   score: number;
   snippet: string;
+  type?: "pdf" | "youtube";
+  video_id?: string;
 }
 
 export interface LatencyBreakdown {
@@ -41,6 +43,18 @@ export interface ChatQueryResponse {
   sources: SourceDocument[];
   crag_status: "CORRECT" | "AMBIGUOUS" | "NO_DATA_FOUND";
   latency_ms: LatencyBreakdown;
+  session_id: string;
+}
+
+export interface ChatHistoryMessage {
+  id: string;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: SourceDocument[];
+  latency_ms?: LatencyBreakdown;
+  crag_status?: "CORRECT" | "AMBIGUOUS" | "NO_DATA_FOUND";
+  created_at: string;
 }
 
 export interface HealthResponse {
@@ -84,9 +98,14 @@ export async function getDocumentStatus(documentId: string): Promise<DocumentSta
 }
 
 /**
- * Envía una consulta de RAG al motor de chat.
+ * Envía una consulta de RAG al motor de chat con memoria conversacional.
  */
-export async function queryChat(query: string, documentIds: string[]): Promise<ChatQueryResponse> {
+export async function queryChat(
+  query: string, 
+  documentIds: string[], 
+  sessionId?: string,
+  signal?: AbortSignal
+): Promise<ChatQueryResponse> {
   const response = await fetch(`${BACKEND_BASE_URL}/chat/query`, {
     method: "POST",
     headers: {
@@ -95,14 +114,48 @@ export async function queryChat(query: string, documentIds: string[]): Promise<C
     body: JSON.stringify({
       query,
       document_ids: documentIds,
+      session_id: sessionId || undefined,
     }),
+    signal,
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || "Error al procesar la consulta en el motor CRAG");
+    throw new Error(errorData.detail || "Error al procesar la consulta en el chat");
   }
 
+  return response.json();
+}
+
+/**
+ * Recupera el historial completo de mensajes para una sesión.
+ */
+export async function getChatHistory(sessionId: string): Promise<ChatHistoryMessage[]> {
+  const response = await fetch(`${BACKEND_BASE_URL}/chat/history/${sessionId}`);
+  if (!response.ok) return [];
+  return response.json();
+}
+
+/**
+ * Limpia el historial de una sesión.
+ */
+export async function clearChatHistory(sessionId: string): Promise<void> {
+  await fetch(`${BACKEND_BASE_URL}/chat/history/${sessionId}`, {
+    method: "DELETE",
+  });
+}
+
+export interface FAQItem {
+  text: string;
+  desc: string;
+}
+
+/**
+ * Obtiene las preguntas frecuentes del sistema de forma dinámica y estructurada.
+ */
+export async function getPopularQuestions(): Promise<FAQItem[]> {
+  const response = await fetch(`${BACKEND_BASE_URL}/chat/popular-questions`);
+  if (!response.ok) return [];
   return response.json();
 }
 
@@ -122,7 +175,9 @@ export async function checkBackendHealth(): Promise<HealthResponse> {
 export interface DocumentItem {
   document_id: string;
   filename: string;
+  file_path?: string;
   status: string;
+  document_type?: string;
   total_chunks: number | null;
   error_message: string | null;
   created_at: string;
@@ -165,3 +220,36 @@ export function getDocumentFileUrl(documentId: string): string {
   return `${BACKEND_BASE_URL}/documents/${documentId}/file`;
 }
 
+/**
+ * Lanza la sincronización manual de vídeos de YouTube.
+ */
+export async function syncYoutubeVideos(channelUrl?: string): Promise<{ status: string; message: string; added?: number }> {
+  const body = channelUrl ? JSON.stringify({ channel_url: channelUrl }) : undefined;
+  const headers = channelUrl ? { "Content-Type": "application/json" } : undefined;
+
+  const response = await fetch(`${BACKEND_BASE_URL}/documents/sync-youtube`, {
+    method: "POST",
+    headers,
+    body,
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Error al sincronizar los vídeos de YouTube");
+  }
+
+  return response.json();
+}
+
+/**
+ * Obtiene la configuración por defecto del canal de YouTube desde el backend.
+ */
+export async function getYoutubeChannelConfig(): Promise<{ channel_id: string; channel_url: string }> {
+  const response = await fetch(`${BACKEND_BASE_URL}/documents/youtube-channel`);
+  
+  if (!response.ok) {
+    throw new Error("No se pudo obtener la configuración del canal de YouTube");
+  }
+
+  return response.json();
+}

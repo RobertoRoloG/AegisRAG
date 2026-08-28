@@ -1,5 +1,5 @@
 """
-AegisRAG — Motor Grafo Corrective RAG (CRAG).
+AEGIS — Motor Grafo Corrective RAG (CRAG).
 
 Implementa la máquina de estados de CRAG de forma asíncrona:
 - RETRIEVE: Recuperación híbrida + Re-Ranking.
@@ -14,6 +14,7 @@ import time
 from typing import Any, Literal
 
 from app.core.config import get_settings
+from app.app_security.prompt_guard import INJECTION_BOUNDARY_INSTRUCTION, build_rag_context
 from app.services.llm import get_llm_service
 from app.services.reranker import get_reranker_service
 from app.services.retrieval import hybrid_search
@@ -50,10 +51,12 @@ class CRAGEngine:
     async def execute_query(
         self, 
         query: str, 
-        document_ids: list[str] | None = None
+        document_ids: list[str] | None = None,
+        history: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """
-        Ejecuta el flujo completo de Corrective RAG (CRAG) midiendo latencias individuales.
+        Ejecuta el flujo completo de Corrective RAG (CRAG) midiendo latencias individuales
+        e integrando memoria conversacional del historial previo.
         """
         start_total = time.perf_counter()
         latencies = {
@@ -68,7 +71,7 @@ class CRAGEngine:
         
         # Ejecutar búsqueda por lenguaje natural completo y búsqueda por entidades en paralelo
         search_query = clean_search_query(query)
-        logger.info("Consulta Natural: '%s' | Consulta Entidades: '%s'", query, search_query)
+        logger.info("Consulta Natural: '%s' | Consulta Entidades: '%s' | Historial turnos: %d", query, search_query, len(history) if history else 0)
 
         task_orig = hybrid_search(query, document_ids=document_ids, top_k=30)
         
@@ -85,11 +88,25 @@ class CRAGEngine:
             if c["id"] not in candidates_map:
                 candidates_map[c["id"]] = c
 
-        all_candidates = list(candidates_map.values())
-        logger.info("Candidatos unificados de búsqueda dual: %d fragmentos", len(all_candidates))
+        # Deduplicar por contenido de texto para eliminar redundancia de fragmentos de video en la base de datos
+        seen_texts = set()
+        unique_candidates = []
+        for c in candidates_map.values():
+            # Normalizar el texto (quitar espacios adicionales y pasar a minúsculas)
+            norm_text = " ".join(c["text"].split()).lower()
+            if norm_text not in seen_texts:
+                seen_texts.add(norm_text)
+                unique_candidates.append(c)
+                
+        all_candidates = unique_candidates
+        logger.info(
+            "Candidatos unificados de búsqueda dual (deduplicados por texto): %d fragmentos (de %d originales)", 
+            len(all_candidates), 
+            len(candidates_map)
+        )
 
-        # Re-Ranking ejecutado en hilo secundario sobre todos los candidatos
-        top_chunks = await asyncio.to_thread(self.reranker.rerank, query, all_candidates, top_n=7)
+        # Re-Ranking ejecutado en hilo secundario sobre todos los candidatos (recupera 12 para un contexto más rico)
+        top_chunks = await asyncio.to_thread(self.reranker.rerank, query, all_candidates, top_n=12)
         latencies["retrieval"] = round((time.perf_counter() - start_ret) * 1000, 2)
 
         # ── 2. Nodo: GRADE ─────────────────────────────────
@@ -132,21 +149,18 @@ class CRAGEngine:
             crag_status = "AMBIGUOUS"
             
             # Reescribir la query usando el LLM
-            query_used = await self.llm.rewrite_query(query)
+            query_used = await self.llm.rewrite_query(query, history=history)
             
             # Reintentar búsqueda híbrida asíncrona con la query optimizada
-            retry_candidates = await hybrid_search(query_used, document_ids=document_ids, top_k=20)
-            retry_chunks = await asyncio.to_thread(self.reranker.rerank, query_used, retry_candidates, top_n=7)
+            retry_candidates = await hybrid_search(query_used, document_ids=document_ids, top_k=25)
+            retry_chunks = await asyncio.to_thread(self.reranker.rerank, query_used, retry_candidates, top_n=10)
             
             latencies["rewrite"] = round((time.perf_counter() - start_rew) * 1000, 2)
 
             # Re-evaluar score de la nueva búsqueda
-            retry_max_score = retry_chunks[0]["rerank_score"] if retry_chunks else 0.0
-            logger.info("Evaluación tras reintento. Score: %0.4f", retry_max_score)
-
-            if retry_max_score < effective_threshold:
-                # Si el segundo intento vuelve a fallar, caemos a NO_DATA_FOUND para evitar alucinaciones
-                logger.error("El reintento también falló por debajo del umbral. Estado: NO_DATA_FOUND.")
+            if not retry_chunks or (retry_chunks[0]["rerank_score"] < effective_threshold and not has_literal_match):
+                # Si aún tras la reescritura no hay datos relevantes
+                logger.warning("Búsqueda reintentada sin resultados suficientes. Estado: NO_DATA_FOUND.")
                 crag_status = "NO_DATA_FOUND"
                 final_chunks = []
             else:
@@ -159,33 +173,60 @@ class CRAGEngine:
         
         if crag_status == "NO_DATA_FOUND":
             answer = (
-                "Lo siento, no he encontrado información relevante en los documentos indexados "
-                "para responder a tu pregunta de manera precisa. Para evitar alucinaciones, "
-                "prefiero no formular una respuesta basada en especulaciones."
+                "¡Hola! Soy Aegisito, el asistente oficial de AEGIS. Lamentablemente no he encontrado información "
+                "relevante en la documentación para responder a tu pregunta de manera precisa. "
+                "¿Hay alguna otra consulta en la que te pueda asistir?"
             )
         else:
-            # Construir contexto para el LLM con etiquetas explícitas de cita
-            context_blocks = []
+            # Construir contexto RAG con delimitadores XML estructurados
+            # (mitiga Indirect Prompt Injection en PDFs maliciosos)
+            context_str = build_rag_context(final_chunks)
+
+            # Mapa de citas para que el LLM pueda referenciar las fuentes
+            citation_map_lines = []
             for i, chunk in enumerate(final_chunks, start=1):
-                context_blocks.append(
-                    f"Cita requerida para este texto: [{chunk['filename']}, pág. {chunk['page_number']}]\n"
-                    f"Texto: {chunk['text']}\n"
-                )
-            context_str = "\n---\n".join(context_blocks)
+                clean_filename = chunk['filename'].replace('[', '(').replace(']', ')')
+                if chunk.get("type") == "youtube":
+                    raw_secs = chunk['page_number']
+                    hrs = raw_secs // 3600
+                    mins = (raw_secs % 3600) // 60
+                    secs = raw_secs % 60
+                    time_label = f"{hrs}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins}:{secs:02d}"
+                    citation_map_lines.append(f"chunk id={i} → [Video: {clean_filename}, min. {time_label}]")
+                else:
+                    citation_map_lines.append(f"chunk id={i} → [{clean_filename}, pág. {chunk['page_number']}]")
+            citation_guide = "\n".join(citation_map_lines)
+
+            # Formatear historial conversacional previo si existe
+            history_str = ""
+            if history:
+                history_lines = []
+                for turn in history[-4:]:
+                    speaker = "Usuario" if turn.get("role") == "user" else "Aegisito"
+                    content = turn.get('content', '')
+                    if len(content) > 400:
+                        content = content[:400] + "..."
+                    history_lines.append(f"{speaker}: {content}")
+                history_str = f"Historial reciente de la conversación:\n" + "\n".join(history_lines) + "\n\n"
 
             system_prompt = (
-                "Eres AegisRAG, un asistente de investigación preciso.\n\n"
-                "REGLAS EStrictAS DE FORMATO Y CITACIÓN:\n"
-                "1. CITAS INLINE EN CADA PÁRRAFO: Cada párrafo o dato de tu respuesta DEBE incluir obligatoriamente su cita [nombre_archivo.pdf, pág. X] intercalada al final de la oración/párrafo.\n"
-                "2. SIN SECCIÓN SEPARADA DE REFERENCIAS: Queda prohibido crear listas finales de 'Referencias', 'Fuentes' o 'Bibliografía' al final del mensaje.\n"
-                "3. SIN ETIQUETAS GENÉRICAS: No escribas expresiones como 'En el Fragmento [1]' ni 'Según la Fuente 1'. En su lugar, redacta la información directamente e inserta la cita clicable [nombre_archivo.pdf, pág. X] al final de la frase.\n"
-                "4. RIGUROSIDAD ABSOLUTA: Toda afirmación debe basarse exclusivamente en el texto provisto."
+                "Eres Aegisito, el asistente virtual oficial, cercano y amigable de AEGIS, una empresa de informática.\n"
+                "Tu objetivo es guiar y ayudar a los clientes con sus dudas sobre el funcionamiento de nuestros programas y manuales de manera atenta, educada y profesional. Evita mencionar repetidamente o de forma innecesaria las palabras 'ERP' o 'software de gestión' en tus respuestas. Céntrate en responder directamente a la consulta del usuario, manteniendo la continuidad si la pregunta hace referencia a lo hablado anteriormente.\n\n"
+                "REGLAS ESTRICTAS DE FORMATO Y CITACIÓN:\n"
+                "1. CITAS INLINE EN CADA PÁRRAFO: Cada párrafo o dato de tu respuesta DEBE incluir obligatoriamente su cita correspondiente al final de la frase o párrafo. Si procede de un manual PDF, cítala exactamente como [nombre_archivo.pdf, pág. X] según se indique en el mapa de citas. Si procede de un videotutorial de YouTube, cítala exactamente en el formato [Video: Nombre del video, min. M:SS] o [Video: Nombre, min. H:MM:SS] tal cual aparezca en el mapa de citas. Queda estrictamente prohibido inventar marcas de tiempo, segundos o números de páginas que no estén explícitamente presentes en el mapa de citas.\n"
+                "2. INTEGRACIÓN MULTIFUENTE (PDFs + VIDEOS): Cuando el contexto contenga fragmentos tanto de manuales PDF como de videotutoriales de YouTube, integra y complementa armónicamente la información de ambas fuentes en tu explicación, contrastando los procedimientos técnicos del PDF con los consejos prácticos del videotutorial y citando cada uno en su sitio correspondiente.\n"
+                "3. SIN SECCIÓN SEPARADA DE REFERENCIAS: Queda prohibido crear listas finales de 'Referencias', 'Fuentes' o 'Bibliografía' al final del mensaje.\n"
+                "4. SIN ETIQUETAS GENÉRICAS: No escribas expresiones como 'En el Fragmento [1]' ni 'Según la Fuente 1'. En su lugar, redacta la información directamente e inserta la cita con corchetes al final de la frase.\n"
+                "5. RIGUROSIDAD ABSOLUTA: Toda afirmación debe basarse exclusivamente en el contexto provisto. Si no tienes la información en el manual o vídeos provistos, admítelo con tu estilo educado y servicial."
+                + INJECTION_BOUNDARY_INSTRUCTION
             )
 
             prompt = (
-                f"Consulta del usuario: {query}\n\n"
-                f"Contexto disponible:\n{context_str}\n\n"
-                f"Respuesta redactada con citas intercaladas en cada párrafo con el formato [nombre_archivo.pdf, pág. X]:"
+                f"{history_str}"
+                f"Consulta actual del usuario: {query}\n\n"
+                f"Mapa de citas obligatorio (usa exactamente este formato para cada fragmento citado):\n{citation_guide}\n\n"
+                f"Contexto de referencia:\n{context_str}\n\n"
+                f"Respuesta clara y completa con citas intercaladas en cada párrafo ([archivo.pdf, pág. X] o [Video: Nombre, min. M:SS]) copiadas textualmente del mapa de citas:"
             )
 
             try:
@@ -204,6 +245,8 @@ class CRAGEngine:
                 "doc_id": chunk["doc_id"],
                 "filename": chunk["filename"],
                 "page_number": chunk["page_number"],
+                "type": chunk.get("type", "pdf"),
+                "video_id": chunk.get("video_id", None),
                 "score": round(chunk["rerank_score"], 4),
                 "snippet": chunk["text"],
             })

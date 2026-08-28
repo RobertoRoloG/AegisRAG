@@ -1,5 +1,5 @@
 # ============================================================
-# AegisRAG — Dependencias Python (Fase 1)
+# AEGIS — Dependencias Python (Fase 1)
 # Pinneadas a versiones mayores para estabilidad.
 # ============================================================
 
@@ -36,6 +36,9 @@ psycopg2-binary>=2.9.0,<3.0.0
 
 # --- HTTP Client (health checks internos) ---
 httpx>=0.27.0,<1.0.0
+
+# --- Rate Limiting (protección contra abuso de endpoints) ---
+slowapi>=0.1.9,<1.0.0
 
 # --- OCR rápido ONNX ---
 rapidocr-onnxruntime>=1.2.0,<2.0.0

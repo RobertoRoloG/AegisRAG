@@ -1,48 +1,149 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, Trash2, Search } from "lucide-react";
-import { uploadDocument, getDocumentStatus, listDocuments, deleteDocument } from "../lib/api";
+import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, Trash2, Search, Video, RotateCw, Play, Eye, EyeOff } from "lucide-react";
+import { uploadDocument, getDocumentStatus, listDocuments, deleteDocument, DocumentStatusResponse, syncYoutubeVideos, getYoutubeChannelConfig, toggleDocument } from "../lib/api";
 
-interface DocumentSidebarProps {
-  onSelectionChange: (docIds: string[], filenames: string[]) => void;
-  selectedDocIds: string[];
-}
-
-interface TrackedDocument {
+export interface TrackedDocument {
   id: string;
   filename: string;
+  file_path?: string;
   status: string;
+  document_type?: string;
   totalChunks: number | null;
   errorMessage: string | null;
+  is_active: boolean;
 }
 
-export default function DocumentSidebar({
-  onSelectionChange,
-  selectedDocIds,
-}: DocumentSidebarProps) {
+interface DocumentSidebarProps {
+  onOpenDocument: (docId: string, filename: string, type: "pdf" | "youtube", filePath?: string) => void;
+}
+
+export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps) {
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [documents, setDocuments] = useState<TrackedDocument[]>([]);
-  const [searchTerm, setSearchTerm] = useState("");
+  const [pdfSearchTerm, setPdfSearchTerm] = useState("");
+  const [ytSearchTerm, setYtSearchTerm] = useState("");
+  const [width, setWidth] = useState(400);
+  const isResizing = useRef(false);
+
+  useEffect(() => {
+    const savedWidth = localStorage.getItem("aegis_sidebar_width");
+    if (savedWidth) {
+      setWidth(parseInt(savedWidth, 10));
+    }
+  }, []);
+
+  const handleMouseMove = (mouseMoveEvent: MouseEvent) => {
+    if (!isResizing.current) return;
+    const newWidth = mouseMoveEvent.clientX;
+    if (newWidth >= 280 && newWidth <= 650) {
+      setWidth(newWidth);
+      localStorage.setItem("aegis_sidebar_width", newWidth.toString());
+    }
+  };
+
+  const handleMouseUp = () => {
+    isResizing.current = false;
+    document.removeEventListener("mousemove", handleMouseMove);
+    document.removeEventListener("mouseup", handleMouseUp);
+  };
+
+  const startResizing = (mouseDownEvent: React.MouseEvent) => {
+    mouseDownEvent.preventDefault();
+    isResizing.current = true;
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+  };
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [syncingYt, setSyncingYt] = useState(false);
   const activePollsRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
+  
+  const [channelUrl, setChannelUrl] = useState("");
+  const [toast, setToast] = useState<{message: string, type: "success" | "error"} | null>(null);
+
+  const showToast = (message: string, type: "success" | "error" = "success") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 5000);
+  };
+
+  useEffect(() => {
+    const savedUrl = localStorage.getItem("aegis_youtube_channel_url");
+    if (savedUrl) {
+      setChannelUrl(savedUrl);
+    } else {
+      getYoutubeChannelConfig()
+        .then((cfg) => {
+          if (cfg && cfg.channel_url) {
+            setChannelUrl(cfg.channel_url);
+          }
+        })
+        .catch((err) => {
+          console.warn("No se pudo cargar el canal por defecto del backend:", err);
+        });
+    }
+  }, []);
+
+  const handleChannelUrlChange = (val: string) => {
+    setChannelUrl(val);
+    localStorage.setItem("aegis_youtube_channel_url", val);
+  };
+
+
+  const handleSyncYoutube = async () => {
+    setSyncingYt(true);
+    setError(null);
+    try {
+      const result = await syncYoutubeVideos(channelUrl);
+      const data = await listDocuments();
+      const formatted: TrackedDocument[] = data.map((d) => ({
+        id: d.document_id,
+        filename: d.filename,
+        file_path: d.file_path,
+        status: d.status,
+        document_type: d.document_type || "pdf",
+        totalChunks: d.total_chunks,
+        errorMessage: d.error_message,
+        is_active: d.is_active,
+      }));
+      setDocuments(formatted);
+      
+      formatted.forEach((doc) => {
+        if (doc.status === "PENDING" || doc.status === "PROCESSING") {
+          startPolling(doc.id, doc.filename);
+        }
+      });
+      if (result.added && result.added > 0) {
+        showToast(`Se han encontrado y encolado ${result.added} vídeos nuevos.`, "success");
+      } else {
+        showToast("Sincronización completada. No hay vídeos nuevos.", "success");
+      }
+    } catch (err: any) {
+      setError(err.message || "Error al sincronizar vídeos de YouTube.");
+    } finally {
+      setSyncingYt(false);
+    }
+  };
 
   useEffect(() => {
     async function loadDocs() {
       try {
         const data = await listDocuments();
-        const formatted = data.map((d) => ({
+        const formatted: TrackedDocument[] = data.map((d) => ({
           id: d.document_id,
           filename: d.filename,
+          file_path: d.file_path,
           status: d.status,
+          document_type: d.document_type || "pdf",
           totalChunks: d.total_chunks,
           errorMessage: d.error_message,
+          is_active: d.is_active,
         }));
         setDocuments(formatted);
-
-        // Iniciar polling para documentos pendientes o procesándose
+        
         formatted.forEach((doc) => {
           if (doc.status === "PENDING" || doc.status === "PROCESSING") {
             startPolling(doc.id, doc.filename);
@@ -55,7 +156,6 @@ export default function DocumentSidebar({
     }
     loadDocs();
 
-    // Limpiar todos los intervalos de polling al desmontar
     return () => {
       Object.values(activePollsRef.current).forEach((interval) => clearInterval(interval));
     };
@@ -78,6 +178,7 @@ export default function DocumentSidebar({
                   status: data.status,
                   totalChunks: data.total_chunks,
                   errorMessage: data.error_message,
+                  is_active: data.is_active,
                 }
               : doc
           )
@@ -90,56 +191,56 @@ export default function DocumentSidebar({
       } catch (err) {
         console.error("Error polling document:", err);
       }
-    }, 2000);
+    }, 1500);
 
     activePollsRef.current[docId] = interval;
   };
 
-  const handleToggleDocument = (docId: string, filename: string) => {
-    let nextDocIds: string[];
-    let nextFilenames: string[];
-
-    if (selectedDocIds.includes(docId)) {
-      nextDocIds = selectedDocIds.filter((id) => id !== docId);
-      nextFilenames = documents
-        .filter((d) => nextDocIds.includes(d.id) && d.id !== docId)
-        .map((d) => d.filename);
-    } else {
-      nextDocIds = [...selectedDocIds, docId];
-      nextFilenames = [
-        ...documents.filter((d) => selectedDocIds.includes(d.id)).map((d) => d.filename),
-        filename
-      ];
+  const handleDelete = async (docId: string, e: React.MouseEvent) => {
+    e.stopPropagation(); 
+    
+    if (!confirm("¿Estás seguro de que deseas eliminar este documento y todas sus citas asociadas?")) {
+      return;
     }
 
-    onSelectionChange(nextDocIds, nextFilenames);
-  };
-
-  const handleDelete = async (docId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm("¿Estás seguro de que deseas eliminar este documento? Esta acción es irreversible.")) return;
-
     try {
-      await deleteDocument(docId);
-
-      // Quitar de documentos activos localmente
-      setDocuments((prev) => prev.filter((d) => d.id !== docId));
-
-      // Limpiar polling si estaba activo
       if (activePollsRef.current[docId]) {
         clearInterval(activePollsRef.current[docId]);
         delete activePollsRef.current[docId];
       }
 
-      // Quitar de la selección activa
-      const nextDocIds = selectedDocIds.filter((id) => id !== docId);
-      const nextFilenames = documents
-        .filter((d) => nextDocIds.includes(d.id) && d.id !== docId)
-        .map((d) => d.filename);
-
-      onSelectionChange(nextDocIds, nextFilenames);
+      await deleteDocument(docId);
+      
+      const nextDocs = documents.filter((doc) => doc.id !== docId);
+      setDocuments(nextDocs);
     } catch (err: any) {
-      setError(err.message || "Fallo al eliminar documento.");
+      setError(err.message || "Error al eliminar documento.");
+    }
+  };
+
+  const handleToggleActive = async (docId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const res = await toggleDocument(docId);
+      
+      const nextDocs = documents.map((doc) =>
+        doc.id === docId
+          ? {
+              ...doc,
+              is_active: res.is_active,
+            }
+          : doc
+      );
+      setDocuments(nextDocs);
+
+      showToast(
+        res.is_active
+          ? "Documento activado correctamente."
+          : "Documento desactivado. No se usará en futuras búsquedas.",
+        "success"
+      );
+    } catch (err: any) {
+      setError(err.message || "Error al cambiar el estado del documento.");
     }
   };
 
@@ -152,40 +253,32 @@ export default function DocumentSidebar({
     setUploading(true);
     setError(null);
 
-    // Añadir documento temporal a la lista para feedback visual instantáneo
     const tempId = "temp-" + Date.now();
     const tempDoc: TrackedDocument = {
       id: tempId,
       filename: file.name,
       status: "UPLOADING",
+      document_type: "pdf",
       totalChunks: null,
       errorMessage: null,
+      is_active: true,
     };
     setDocuments((prev) => [tempDoc, ...prev]);
 
     try {
       const res = await uploadDocument(file);
       
-      // Actualizar el documento temporal con el ID real
       setDocuments((prev) => 
         prev.map(d => d.id === tempId ? {
           ...d,
           id: res.document_id,
           status: "PENDING",
+          is_active: true,
         } : d)
       );
       
-      // Auto-seleccionar agregando el nuevo documento
-      const nextDocIds = [...selectedDocIds, res.document_id];
-      const nextFilenames = [
-        ...documents.filter((d) => selectedDocIds.includes(d.id)).map((d) => d.filename),
-        file.name
-      ];
-      onSelectionChange(nextDocIds, nextFilenames);
-      
       startPolling(res.document_id, file.name);
     } catch (err: any) {
-      // Eliminar el documento temporal si falla la subida
       setDocuments((prev) => prev.filter(d => d.id !== tempId));
       setError(err.message || "Error al subir documento.");
     } finally {
@@ -214,17 +307,28 @@ export default function DocumentSidebar({
   };
 
   return (
-    <aside className="w-80 bg-zinc-950 border-r border-zinc-800 flex flex-col h-full">
-      {/* Header */}
+    <aside 
+      style={{ width: `${width}px` }} 
+      className="bg-zinc-950 border-r border-zinc-800 flex flex-col h-full relative"
+    >
+      {toast && (
+        <div className={`absolute bottom-4 left-4 right-4 p-3 rounded-xl text-xs font-medium border shadow-xl z-50 transition-all ${
+          toast.type === "success" 
+            ? "bg-green-950/90 border-green-900/50 text-green-400" 
+            : "bg-red-950/90 border-red-900/50 text-red-400"
+        }`}>
+          {toast.message}
+        </div>
+      )}
+
       <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
         <h2 className="text-xl font-bold text-zinc-100 flex items-center gap-2 tracking-tight">
-          <span className="w-3 h-3 rounded-full bg-indigo-500 animate-pulse"></span>
-          AegisRAG
+          <span className="w-3 h-3 rounded-full bg-blue-500 animate-pulse"></span>
+          AEGIS
         </h2>
         <span className="text-xs bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded font-mono">v0.1.0</span>
       </div>
 
-      {/* Zona de Subida */}
       <div className="p-6 border-b border-zinc-800">
         <div
           onDragEnter={handleDrag}
@@ -234,7 +338,7 @@ export default function DocumentSidebar({
           onClick={() => fileInputRef.current?.click()}
           className={`border border-dashed rounded-xl p-5 text-center cursor-pointer transition-all duration-300 flex flex-col items-center justify-center gap-3 ${
             dragActive
-              ? "border-indigo-500 bg-indigo-950/20"
+              ? "border-blue-500 bg-blue-950/20"
               : "border-zinc-800 hover:border-zinc-700 bg-zinc-900/30 hover:bg-zinc-900/50"
           }`}
         >
@@ -246,7 +350,7 @@ export default function DocumentSidebar({
             onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])}
           />
           {uploading ? (
-            <Loader2 className="h-8 w-8 text-indigo-500 animate-spin" />
+            <Loader2 className="h-8 w-8 text-blue-500 animate-spin" />
           ) : (
             <Upload className="h-8 w-8 text-zinc-500 transition-transform group-hover:-translate-y-1" />
           )}
@@ -263,135 +367,256 @@ export default function DocumentSidebar({
         )}
       </div>
 
-      {/* Listado de Documentos */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         <div className="flex items-center justify-between mb-1">
-          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Documentos Activos</h3>
+          <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-widest">
+            Documentos Activos
+          </h3>
+          <span className="text-[10px] text-zinc-500 font-mono">
+            {documents.filter(d => (d.document_type || "pdf") === "pdf" && d.status === "COMPLETED").length} manuales
+          </span>
         </div>
 
-        {/* Input buscador interactivo */}
         <div className="relative">
           <input
             type="text"
             placeholder="Buscar PDF por nombre..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-zinc-900/50 hover:bg-zinc-900/80 focus:bg-zinc-900/90 border border-zinc-800 text-zinc-200 text-xs rounded-xl pl-9 pr-4 py-2.5 outline-none focus:border-indigo-500/80 transition-all placeholder-zinc-500"
+            value={pdfSearchTerm}
+            onChange={(e) => setPdfSearchTerm(e.target.value)}
+            className="w-full bg-zinc-900/50 hover:bg-zinc-900/80 focus:bg-zinc-900/90 border border-zinc-800 text-zinc-200 text-sm rounded-xl pl-10 pr-4 py-3 outline-none focus:border-blue-500/80 transition-all placeholder-zinc-500"
           />
-          <Search className="absolute left-3 top-3 h-3.5 w-3.5 text-zinc-500" />
+          <Search className="absolute left-3.5 top-3.5 h-4 w-4 text-zinc-500" />
         </div>
-
-        {/* Botón dinámico para limpiar la selección */}
-        {selectedDocIds.length > 0 && (
-          <button
-            onClick={() => onSelectionChange([], [])}
-            className="w-full text-center p-2 rounded-xl text-[10px] text-indigo-400 hover:text-indigo-300 hover:bg-indigo-950/20 border border-indigo-900/30 transition-all font-semibold uppercase tracking-wider cursor-pointer"
-          >
-            Limpiar selección ({selectedDocIds.length} seleccionados)
-          </button>
-        )}
         
-        {documents.length === 0 ? (
-          <div className="text-center py-10">
-            <p className="text-sm text-zinc-600">No hay archivos cargados aún.</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {(() => {
-              const filteredDocs = documents.filter((doc) =>
-                doc.filename.toLowerCase().includes(searchTerm.toLowerCase())
-              );
+        {(() => {
+          const pdfDocs = documents.filter(d => (d.document_type || "pdf") === "pdf");
+          const filteredDocs = pdfDocs.filter((doc) =>
+            doc.filename.toLowerCase().includes(pdfSearchTerm.toLowerCase())
+          );
 
-              if (filteredDocs.length === 0) {
-                return (
-                  <p className="text-center text-xs text-zinc-600 py-6">
-                    No se encontraron documentos que coincidan con la búsqueda.
-                  </p>
-                );
-              }
-
-              return filteredDocs.map((doc) => {
-                const isSelected = selectedDocIds.includes(doc.id);
-                return (
-                  <div
-                    key={doc.id}
-                    onClick={() => doc.status === "COMPLETED" && handleToggleDocument(doc.id, doc.filename)}
-                    className={`p-3 rounded-xl border transition-all duration-300 relative group ${
-                      doc.status === "COMPLETED" ? "cursor-pointer" : "opacity-60 cursor-not-allowed"
-                    } ${
-                      isSelected
-                        ? "border-indigo-500/50 bg-indigo-950/10 shadow-lg shadow-indigo-950/10"
-                        : "border-zinc-900 hover:border-zinc-800 bg-zinc-900/20 hover:bg-zinc-900/40"
-                    }`}
-                  >
-                    {/* Botón de eliminar con papelera (visible en hover) */}
-                    <button
-                      onClick={(e) => handleDelete(doc.id, e)}
-                      className="absolute top-3 right-3 text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10 cursor-pointer"
-                      title="Eliminar documento"
+          return (
+            <div className="space-y-2">
+              {filteredDocs.length === 0 ? (
+                <p className="text-center text-xs text-zinc-600 py-6">
+                  No hay manuales PDF indexados.
+                </p>
+              ) : (
+                filteredDocs.map((doc) => {
+                  return (
+                    <div
+                      key={doc.id}
+                      onClick={() => doc.status === "COMPLETED" && doc.is_active && onOpenDocument(doc.id, doc.filename, "pdf")}
+                      className={`p-4 rounded-xl border transition-all duration-300 relative group ${
+                        doc.status === "COMPLETED" && doc.is_active 
+                          ? "cursor-pointer border-zinc-900 hover:border-blue-500/50 hover:bg-blue-950/10 hover:shadow-lg hover:shadow-blue-950/10" 
+                          : doc.status === "COMPLETED" 
+                            ? "cursor-pointer opacity-70 border-zinc-900 hover:border-zinc-800 bg-zinc-900/20" 
+                            : "opacity-60 cursor-not-allowed border-zinc-900 bg-zinc-900/10"
+                      }`}
                     >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                      {doc.status === "COMPLETED" && (
+                        <button
+                          onClick={(e) => handleToggleActive(doc.id, e)}
+                          className={`absolute top-4 right-10 text-zinc-500 hover:text-blue-400 transition-all duration-200 z-10 cursor-pointer ${
+                            !doc.is_active ? "opacity-100 text-amber-500" : "opacity-0 group-hover:opacity-100"
+                          }`}
+                          title={doc.is_active ? "Desactivar documento (no se usará en chat)" : "Activar documento (se usará en chat)"}
+                        >
+                          {doc.is_active ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                        </button>
+                      )}
 
-                    <div className="flex items-start gap-3">
-                      {/* Checkbox para indicar selección múltiple */}
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        disabled={doc.status !== "COMPLETED"}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          if (doc.status === "COMPLETED") {
-                            handleToggleDocument(doc.id, doc.filename);
-                          }
-                        }}
-                        className="mt-1 h-3.5 w-3.5 rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 bg-zinc-900 shrink-0 cursor-pointer disabled:opacity-40"
-                      />
-                      
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <FileText className={`h-4 w-4 shrink-0 ${isSelected ? "text-indigo-400" : "text-zinc-500"}`} />
-                          <p className="text-sm font-medium text-zinc-200 truncate pr-6">{doc.filename}</p>
-                        </div>
-                        
-                        <div className="flex items-center gap-1.5 mt-1.5 pl-5">
-                          {doc.status === "COMPLETED" && (
-                            <>
-                              <CheckCircle2 className="h-3 w-3 text-green-500" />
-                              <span className="text-xs text-zinc-500">{doc.totalChunks} chunks</span>
-                            </>
-                          )}
-                          {doc.status === "FAILED" && (
-                            <div className="mt-1">
-                              <div className="flex items-center gap-1.5">
-                                <AlertCircle className="h-3 w-3 text-red-500 shrink-0" />
-                                <span className="text-xs font-bold text-red-500">Error en procesamiento</span>
+                      <button
+                        onClick={(e) => handleDelete(doc.id, e)}
+                        className="absolute top-4 right-4 text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10 cursor-pointer"
+                        title="Eliminar documento"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+
+                      <div className="flex items-start gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <FileText className="h-4 w-4 shrink-0 text-zinc-500" />
+                            <p className={`text-sm font-medium truncate pr-16 ${
+                              !doc.is_active ? "text-zinc-500 line-through italic" : "text-zinc-200"
+                            }`}>{doc.filename}</p>
+                          </div>
+                          
+                          <div className="flex items-center gap-1.5 mt-1.5 pl-5.5">
+                            {doc.status === "COMPLETED" && (
+                              <>
+                                <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                                <span className="text-xs text-zinc-500">{doc.totalChunks} chunks {!doc.is_active && "(Inactivo)"}</span>
+                              </>
+                            )}
+                            {doc.status === "FAILED" && (
+                              <div className="mt-1">
+                                <div className="flex items-center gap-1.5">
+                                  <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                                  <span className="text-xs font-bold text-red-500">Error</span>
+                                </div>
                               </div>
-                              {doc.errorMessage && (
-                                <p className="text-[10px] text-red-400/90 mt-1 leading-relaxed bg-red-950/10 border border-red-900/30 p-1.5 rounded-lg break-words whitespace-pre-wrap">
-                                  {doc.errorMessage}
-                                </p>
-                              )}
-                            </div>
-                          )}
-                          {(doc.status === "PENDING" || doc.status === "PROCESSING" || doc.status === "UPLOADING") && (
-                            <div className="flex items-center gap-1.5">
-                              <Loader2 className="h-3 w-3 text-indigo-400 animate-spin" />
-                              <span className="text-xs text-indigo-400">
-                                {doc.status === "UPLOADING" ? "Subiendo..." : "Procesando..."}
-                              </span>
-                            </div>
-                          )}
+                            )}
+                            {(doc.status === "PENDING" || doc.status === "PROCESSING" || doc.status === "UPLOADING") && (
+                              <div className="flex items-center gap-1.5">
+                                <Loader2 className="h-3 w-3 text-blue-400 animate-spin" />
+                                <span className="text-xs text-blue-400">Procesando...</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
+                  );
+                })
+              )}
+            </div>
+          );
+        })()}
+
+        <div className="pt-4 border-t border-zinc-900 space-y-4">
+          <div className="flex flex-col gap-3">
+            {(() => {
+              const completedVideos = documents.filter(d => d.document_type === "youtube" && d.status === "COMPLETED");
+
+              return (
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-1.5">
+                    <Video className="h-4 w-4 text-red-500 shrink-0" />
+                    Videotutoriales
+                  </h3>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-zinc-500 font-mono">
+                      {completedVideos.length} vídeos
+                    </span>
+                    <button
+                      onClick={handleSyncYoutube}
+                      disabled={syncingYt}
+                      className="p-1.5 rounded-lg bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 hover:text-zinc-200 text-zinc-400 cursor-pointer disabled:opacity-40 transition-all flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider"
+                      title="Sincronizar videotutoriales de YouTube"
+                    >
+                      {syncingYt ? (
+                        <Loader2 className="h-3.5 w-3.5 text-red-500 animate-spin" />
+                      ) : (
+                        <RotateCw className="h-3.5 w-3.5 text-zinc-400" />
+                      )}
+                      <span>Sincronizar</span>
+                    </button>
                   </div>
-                );
-              });
+                </div>
+              );
             })()}
+            
+            <input
+              type="text"
+              value={channelUrl}
+              onChange={(e) => handleChannelUrlChange(e.target.value)}
+              placeholder="Enlace o ID del canal de YouTube..."
+              className="w-full bg-zinc-900/50 hover:bg-zinc-900/80 focus:bg-zinc-900/90 border border-zinc-800 text-zinc-200 text-sm rounded-xl px-4 py-3 outline-none focus:border-red-500/80 transition-all placeholder-zinc-600"
+            />
           </div>
-        )}
+
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Buscar vídeo por nombre..."
+              value={ytSearchTerm}
+              onChange={(e) => setYtSearchTerm(e.target.value)}
+              className="w-full bg-zinc-900/50 hover:bg-zinc-900/80 focus:bg-zinc-900/90 border border-zinc-800 text-zinc-200 text-sm rounded-xl pl-10 pr-4 py-3 outline-none focus:border-red-500/80 transition-all placeholder-zinc-500"
+            />
+            <Search className="absolute left-3.5 top-3.5 h-4 w-4 text-zinc-500" />
+          </div>
+
+          {(() => {
+            const ytDocs = documents.filter(d => d.document_type === "youtube");
+            const filteredYt = ytDocs.filter(d => d.filename.toLowerCase().includes(ytSearchTerm.toLowerCase()));
+
+            return (
+              <div className="space-y-2">
+                {filteredYt.length === 0 ? (
+                  <div className="text-center py-6 border border-zinc-900 rounded-xl bg-zinc-950/10">
+                    <p className="text-xs text-zinc-600">No hay vídeos indexados. Haz clic en "Sincronizar" para buscarlos.</p>
+                  </div>
+                ) : (
+                  filteredYt.map((doc) => {
+                    return (
+                      <div
+                        key={doc.id}
+                        onClick={() => doc.status === "COMPLETED" && doc.is_active && onOpenDocument(doc.id, doc.filename, "youtube", doc.file_path)}
+                        className={`p-4 rounded-xl border transition-all duration-300 relative group ${
+                          doc.status === "COMPLETED" && doc.is_active 
+                            ? "cursor-pointer border-zinc-900 hover:border-red-500/50 hover:bg-red-950/10 hover:shadow-lg hover:shadow-red-950/10" 
+                            : doc.status === "COMPLETED" 
+                              ? "cursor-pointer opacity-70 border-zinc-900 hover:border-zinc-800 bg-zinc-900/20" 
+                              : "opacity-60 cursor-not-allowed border-zinc-900 bg-zinc-900/10"
+                        }`}
+                      >
+                        {doc.status === "COMPLETED" && (
+                          <button
+                            onClick={(e) => handleToggleActive(doc.id, e)}
+                            className={`absolute top-4 right-10 text-zinc-500 hover:text-red-400 transition-all duration-200 z-10 cursor-pointer ${
+                              !doc.is_active ? "opacity-100 text-amber-500" : "opacity-0 group-hover:opacity-100"
+                            }`}
+                            title={doc.is_active ? "Desactivar videotutorial (no se usará en chat)" : "Activar videotutorial (se usará en chat)"}
+                          >
+                            {doc.is_active ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                          </button>
+                        )}
+
+                        <button
+                          onClick={(e) => handleDelete(doc.id, e)}
+                          className="absolute top-4 right-4 text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10 cursor-pointer"
+                          title="Eliminar videotutorial"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+
+                        <div className="flex items-start gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <Play className="h-4 w-4 shrink-0 text-zinc-500" />
+                              <p className={`text-sm font-semibold truncate pr-16 ${
+                                !doc.is_active ? "text-zinc-500 line-through italic" : "text-zinc-200"
+                              }`}>{doc.filename}</p>
+                            </div>
+                            
+                            <div className="flex items-center gap-1.5 mt-1.5 pl-5.5">
+                              {doc.status === "COMPLETED" && (
+                                <>
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-green-500 animate-pulse" />
+                                  <span className="text-xs text-zinc-500 font-medium">{doc.totalChunks} chunks {!doc.is_active && "(Inactivo)"}</span>
+                                </>
+                              )}
+                              {doc.status === "FAILED" && (
+                                <span className="text-[10px] text-red-500 font-bold">Error en procesado</span>
+                              )}
+                              {(doc.status === "PENDING" || doc.status === "PROCESSING" || doc.status === "UPLOADING") && (
+                                <div className="flex items-center gap-1.5">
+                                  <Loader2 className="h-3 w-3 text-red-400 animate-spin" />
+                                  <span className="text-[10px] text-red-400">Indexando...</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            );
+          })()}
+        </div>
+
       </div>
+
+      {/* Barra de arrastre para redimensionar (resizer handle) */}
+      <div
+        onMouseDown={startResizing}
+        className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize hover:bg-zinc-700/80 active:bg-blue-500 transition-colors z-30"
+      />
     </aside>
   );
 }

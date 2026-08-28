@@ -1,5 +1,5 @@
 """
-AegisRAG — Tarea de ingestión asíncrona de documentos PDF.
+AEGIS — Tarea de ingestión asíncrona de documentos PDF.
 
 Pipeline optimizado ejecutado por el worker Celery:
 1. Marca el documento como PROCESSING en PostgreSQL
@@ -25,6 +25,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.core.config import get_settings
 from app.db.models import Document, DocumentStatus
 from app.db.postgres import sync_session_factory
+from app.app_security.prompt_guard import sanitize_text_for_indexing
 from app.services.vector_store import (
     ChunkData,
     generate_dense_embeddings,
@@ -112,7 +113,7 @@ def _extract_pdf_pages_safe(file_path: str) -> tuple[list[tuple[int, str]], list
 
 
 @celery_app.task(
-    name="aegisrag.process_pdf",
+    name="AEGIS.process_pdf",
     bind=True,
     max_retries=3,
     default_retry_delay=10,
@@ -196,9 +197,11 @@ def process_pdf_task(self, document_id: str) -> dict[str, str | int]:  # noqa: A
             for page_num, page_text in pages_text:
                 page_chunks = splitter.split_text(page_text)
                 for chunk_text in page_chunks:
+                    # Sanitizar PII antes de indexar en Qdrant
+                    safe_text = sanitize_text_for_indexing(chunk_text)
                     chunks.append(
                         ChunkData(
-                            text=chunk_text,
+                            text=safe_text,
                             doc_id=document_id,
                             filename=document.filename,
                             page_number=page_num,
@@ -298,3 +301,206 @@ def process_pdf_task(self, document_id: str) -> dict[str, str | int]:  # noqa: A
                     "document_id": document_id,
                     "error": f"Reintentos máximos agotados. Error original: {exc}",
                 }
+
+
+# ── TAREAS DE SINCRONIZACIÓN E INGESTIÓN DE YOUTUBE ──────────────────
+
+import xml.etree.ElementTree as ET
+import httpx
+import uuid
+from qdrant_client.models import PointStruct, SparseVector
+from app.db.qdrant import get_qdrant_client
+
+@celery_app.task(
+    name="AEGIS.process_youtube_video",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=10,
+)
+def process_youtube_video_task(self, document_id: str):
+    """Descarga la transcripción del vídeo de YouTube, genera embeddings y la guarda en Qdrant."""
+    logger.info(f"Iniciando procesamiento de vídeo de YouTube: {document_id}")
+    
+    from youtube_transcript_api import YouTubeTranscriptApi
+    
+    with sync_session_factory() as session:
+        doc = session.get(Document, document_id)
+        if doc is None:
+            logger.error(f"Documento no encontrado: {document_id}")
+            return {"status": "error", "message": "Vídeo no encontrado"}
+            
+        doc.status = DocumentStatus.PROCESSING
+        session.commit()
+        
+        try:
+            # Extraer video_id de la URL
+            video_id = doc.file_path.split("v=")[-1].split("&")[0]
+            logger.info(f"Descargando transcripción para video_id: {video_id}")
+            
+            try:
+                # Comprobar si existe un archivo de cookies en la carpeta backend/ real (3 niveles arriba)
+                app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                backend_dir = os.path.dirname(app_dir)
+                cookies_file = os.path.join(backend_dir, "youtube_cookies.txt")
+                if not os.path.exists(cookies_file):
+                    cookies_file = os.path.join(backend_dir, "cookies.txt")
+                if not os.path.exists(cookies_file):
+                    # Fallback a app/ por si acaso
+                    cookies_file = os.path.join(app_dir, "youtube_cookies.txt")
+
+                cookies_path = cookies_file if os.path.exists(cookies_file) else None
+                if cookies_path:
+                    logger.info(f"Usando cookies de YouTube desde: {cookies_path}")
+
+                # Instanciar e invocar el método fetch compatible con la versión de la librería y pasarle el cliente HTTP con cookies
+                import time
+                import random
+                import requests
+                from http.cookiejar import MozillaCookieJar
+
+                sleep_time = random.randint(10, 20)
+                logger.info(f"Pausando la descarga durante {sleep_time} segundos para evitar bloqueos de IP...")
+                time.sleep(sleep_time)
+
+                session_http = requests.Session()
+                session_http.headers.update({
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept-Language': 'es-ES,es;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Origin': 'https://www.youtube.com',
+                    'Referer': 'https://www.youtube.com/'
+                })
+
+                if cookies_path:
+                    try:
+                        cookie_jar = MozillaCookieJar(cookies_path)
+                        cookie_jar.load(ignore_discard=True, ignore_expires=True)
+                        session_http.cookies = cookie_jar
+                    except Exception as e:
+                        logger.warning(f"Error al cargar las cookies desde MozillaCookieJar: {e}")
+
+                ytt = YouTubeTranscriptApi(http_client=session_http)
+                transcript = ytt.fetch(video_id, languages=['es', 'es-ES', 'es-419', 'en'])
+            except Exception as tr_exc:
+                # Si YouTube no tiene transcripción o persiste el error, marcamos como FAILED
+                logger.warning(f"Vídeo {video_id} sin transcripción disponible: {tr_exc}")
+                doc.status = DocumentStatus.FAILED
+                doc.error_message = f"Sin transcripción disponible en YouTube o baneo de IP ({tr_exc})"
+                session.commit()
+                return {"status": "failed", "document_id": document_id, "error": str(tr_exc)}
+                
+            # Segmentar transcripción en bloques de 90 segundos
+            chunks_data = []
+            chunk_index = 0
+            texto_acumulado = []
+            segundo_inicio = None
+            
+            for entrada in transcript:
+                text_val = getattr(entrada, 'text', None) or (entrada.get('text') if isinstance(entrada, dict) else str(entrada))
+                start_val = getattr(entrada, 'start', None) if hasattr(entrada, 'start') else (entrada.get('start') if isinstance(entrada, dict) else 0.0)
+                dur_val = getattr(entrada, 'duration', None) if hasattr(entrada, 'duration') else (entrada.get('duration') if isinstance(entrada, dict) else 0.0)
+
+                if segundo_inicio is None:
+                    segundo_inicio = start_val
+                texto_acumulado.append(text_val)
+                
+                duracion = (start_val + dur_val) - segundo_inicio
+                if duracion >= 90:
+                    text_content = " ".join(texto_acumulado)
+                    chunks_data.append(ChunkData(
+                        text=text_content,
+                        doc_id=str(doc.id),
+                        filename=doc.filename,
+                        page_number=int(segundo_inicio),  # Usamos page_number para almacenar el timestamp en segundos
+                        chunk_index=chunk_index
+                    ))
+                    chunk_index += 1
+                    texto_acumulado = []
+                    segundo_inicio = None
+                    
+            if texto_acumulado and segundo_inicio is not None:
+                text_content = " ".join(texto_acumulado)
+                chunks_data.append(ChunkData(
+                    text=text_content,
+                    doc_id=str(doc.id),
+                    filename=doc.filename,
+                    page_number=int(segundo_inicio),
+                    chunk_index=chunk_index
+                ))
+                
+            if not chunks_data:
+                logger.warning(f"La transcripción del vídeo {video_id} está vacía.")
+                doc.status = DocumentStatus.FAILED
+                doc.error_message = "Transcripción vacía"
+                session.commit()
+                return {"status": "failed", "document_id": document_id, "error": "Transcripción vacía"}
+                
+            logger.info(f"Generados {len(chunks_data)} chunks para el vídeo {doc.filename}")
+            
+            # Generar vectores de búsqueda híbrida e insertar en la colección 'aegis_chunks' de Qdrant
+            texts = [c.text for c in chunks_data]
+            dense = generate_dense_embeddings(texts)
+            sparse = generate_sparse_embeddings(texts)
+            
+            from qdrant_client import QdrantClient
+            client_sync = get_qdrant_client()
+            
+            points = []
+            for chunk, dense_emb, sparse_emb in zip(chunks_data, dense, sparse, strict=True):
+                points.append(
+                    PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector={
+                            "dense": dense_emb,
+                            "sparse": SparseVector(indices=sparse_emb["indices"], values=sparse_emb["values"])
+                        },
+                        payload={
+                            "doc_id": chunk.doc_id,
+                            "filename": chunk.filename,
+                            "page_number": chunk.page_number,  # Timestamp inicial (segundos)
+                            "chunk_index": chunk.chunk_index,
+                            "text": chunk.text,
+                            "type": "youtube",      # Identificador de fuente
+                            "video_id": video_id
+                        }
+                    )
+                )
+                
+            logger.info(f"Subiendo {len(points)} puntos a Qdrant...")
+            client_sync.upsert(collection_name=settings.qdrant_collection, points=points)
+            
+            doc.status = DocumentStatus.COMPLETED
+            doc.total_chunks = len(chunks_data)
+            doc.error_message = None
+            session.commit()
+            
+            logger.info(f"Vídeo {doc.filename} procesado con éxito.")
+            return {
+                "status": "completed",
+                "document_id": document_id,
+                "total_chunks": len(chunks_data),
+            }
+            
+        except Exception as exc:
+            session.rollback()
+            logger.error(f"Fallo al procesar el vídeo {document_id}: {exc}")
+            
+            try:
+                raise self.retry(exc=exc)
+            except self.MaxRetriesExceededError:
+                logger.error(f"Reintentos máximos agotados para el vídeo {document_id}. Marcando como FAILED.")
+                try:
+                    document = session.get(Document, document_id)
+                    if document is not None:
+                        document.status = DocumentStatus.FAILED
+                        document.error_message = f"Error al procesar: {exc}"
+                        session.commit()
+                except Exception as update_exc:
+                    logger.exception(f"No se pudo actualizar el estado a FAILED para {document_id}: {update_exc}")
+                    session.rollback()
+                return {
+                    "status": "failed",
+                    "document_id": document_id,
+                    "error": f"Error: {exc}",
+                }
+

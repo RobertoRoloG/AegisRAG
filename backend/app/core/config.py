@@ -1,20 +1,23 @@
 """
-AegisRAG — Configuración centralizada del backend.
+AEGIS — Configuración centralizada del backend.
 
 Usa pydantic-settings para cargar variables de entorno desde .env
 con validación automática de tipos y valores por defecto seguros.
 Patrón Singleton via lru_cache para evitar re-parsear en cada request.
+
+Campos de seguridad añadidos:
+- redis_password: si se define, se incluye en la URL de Redis
+- qdrant_api_key: si se define, se pasa al cliente Qdrant como api_key
 """
 
 from functools import lru_cache
-from typing import Annotated
 
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Configuración global de la aplicación AegisRAG."""
+    """Configuración global de la aplicación AEGIS."""
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
@@ -24,7 +27,7 @@ class Settings(BaseSettings):
     )
 
     # ── API ────────────────────────────────────────────────
-    api_title: str = "AegisRAG"
+    api_title: str = "AEGIS"
     api_version: str = "0.1.0"
     api_debug: bool = False
     cors_origins: list[str] = [
@@ -33,11 +36,11 @@ class Settings(BaseSettings):
     ]
 
     # ── PostgreSQL ─────────────────────────────────────────
-    postgres_user: str = "aegisrag"
-    postgres_password: str = "aegisrag_secret"
-    postgres_db: str = "aegisrag"
+    postgres_user: str = "AEGIS"
+    postgres_password: str = "AEGIS_secret"
+    postgres_db: str = "AEGIS"
     postgres_host: str = "localhost"
-    postgres_port: int = 5432
+    postgres_port: int = 5433
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -52,15 +55,23 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_grpc_port: int = 6334
+    # Si se define, se pasa como api_key al cliente Qdrant.
+    # Dejar vacío para entornos locales sin autenticación.
+    qdrant_api_key: str | None = None
 
     # ── Redis ──────────────────────────────────────────────
     redis_host: str = "localhost"
-    redis_port: int = 6379
+    redis_port: int = 6380
+    # Si se define, se incluye en la URL de Redis (requirepass).
+    # Dejar vacío para entornos locales sin contraseña.
+    redis_password: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def redis_url(self) -> str:
         """URL de conexión para Redis (broker Celery y caché)."""
+        if self.redis_password:
+            return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/0"
         return f"redis://{self.redis_host}:{self.redis_port}/0"
 
     # ── Embeddings ─────────────────────────────────────────
@@ -73,10 +84,12 @@ class Settings(BaseSettings):
     crag_relevance_threshold: float = 0.10
 
     # ── LLM ────────────────────────────────────────────────
-    llm_provider: str = "ollama"
-    llm_model: str = "llama3"
+    llm_provider: str = "groq"
+    llm_model: str = "openai/gpt-oss-120b"
     openai_api_key: str | None = None
     groq_api_key: str | None = None
+    gemini_api_key: str | None = None
+    deepseek_api_key: str | None = None
     ollama_base_url: str = "http://127.0.0.1:11434"
 
     # ── Ingestión de documentos ────────────────────────────
@@ -84,6 +97,7 @@ class Settings(BaseSettings):
     chunk_size: int = 500
     chunk_overlap: int = 50
     qdrant_collection: str = "aegis_chunks"
+    youtube_channel_id: str = "UCoZWQl3d034u8OIqnEGEnXA"
 
     # ── PostgreSQL Sync (para Celery workers) ──────────────
     @computed_field  # type: ignore[prop-decorator]

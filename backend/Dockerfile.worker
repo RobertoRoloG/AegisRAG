@@ -1,11 +1,12 @@
 # ============================================================
-# AEGIS — Dockerfile del Backend (Hardened)
-# Multi-stage build optimizado para producción.
+# AEGIS — Dockerfile del Worker Celery (Hardened)
+# Imagen dedicada para los workers de ingestión asíncrona.
 #
 # Seguridad aplicada:
 # - Proceso corre como usuario no-root 'appuser' (UID 1001)
-# - Sin privilegios escalados (no-new-privileges vía runtime flag)
 # - Directorio de uploads con ownership exclusivo de appuser
+# - Sin puertos expuestos (worker solo consume de Redis)
+# - Sin healthcheck HTTP (el worker no expone endpoints)
 # ============================================================
 
 # --- Stage 1: Dependencias ---
@@ -13,7 +14,6 @@ FROM python:3.11-slim AS dependencies
 
 WORKDIR /tmp
 
-# Instalar dependencias del sistema necesarias para compilar asyncpg
 RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc libpq-dev && \
     rm -rf /var/lib/apt/lists/*
@@ -30,29 +30,24 @@ RUN groupadd --gid 1001 appgroup && \
 
 WORKDIR /app
 
-# Solo las libs runtime necesarias (sin compiladores)
+# Dependencias runtime mínimas para el worker (sin curl/healthcheck)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq5 curl && \
+    apt-get install -y --no-install-recommends libpq5 && \
     rm -rf /var/lib/apt/lists/*
 
-# Copiar dependencias pre-compiladas del stage anterior
+# Copiar dependencias pre-compiladas
 COPY --from=dependencies /install /usr/local
 
-# Copiar código fuente con ownership del usuario de la app
+# Copiar código fuente con ownership correcto
 COPY --chown=appuser:appgroup . .
 
-# Crear directorio de uploads con permisos exclusivos para appuser
+# Crear directorio de uploads con permisos para el worker
 RUN mkdir -p /app/uploads && chown -R appuser:appgroup /app/uploads
 
 # Cambiar al usuario no-root
 USER appuser
 
-# Puerto de la API
-EXPOSE 8000
-
-# Health check del contenedor
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -sf http://localhost:8000/api/v1/health || exit 1
-
-# Ejecutar con Uvicorn (workers configurables via ENV)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+# Ejecutar Celery worker con pool=solo para compatibilidad con asyncio
+# --max-tasks-per-child gestionado vía config, pero se puede sobreescribir aquí
+CMD ["celery", "-A", "app.workers.celery_app", "worker", \
+     "--loglevel=info", "--pool=solo", "--max-tasks-per-child=200"]

@@ -1,0 +1,215 @@
+# ============================================================
+# AEGIS — Docker Compose de Producción (24/7)
+# Orquesta la suite completa con políticas de auto-reinicio,
+# volúmenes persistentes y límites de logs para evitar fallos.
+# ============================================================
+
+services:
+  # ── Base de datos relacional (PostgreSQL 16) ──────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: AEGIS-postgres-prod
+    restart: always
+    env_file:
+      - ./backend/.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-AEGIS}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-AEGIS_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-AEGIS}
+      TZ: Europe/Madrid
+    ports:
+      - "5433:5432" # Expone 5433 en el host para evitar colisiones
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-AEGIS} -d ${POSTGRES_DB:-AEGIS}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - aegis-prod-network
+
+  # ── Base de datos vectorial (Qdrant v1.18) ────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    container_name: AEGIS-qdrant-prod
+    restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - aegis-prod-network
+
+  # ── Broker de tareas (Redis 7) ────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: AEGIS-redis-prod
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - aegis-prod-network
+
+  # ── Servidor Backend (FastAPI) ────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: AEGIS-backend-prod
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: always
+    env_file:
+      - ./backend/.env
+    environment:
+      # Sobrescribir hosts para la red Docker interna
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432  # Puerto interno de Postgres en la red Docker
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379     # Puerto interno de Redis en la red Docker
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333    # Puerto interno de Qdrant en la red Docker
+      - API_DEBUG=false
+      - TZ=Europe/Madrid
+    ports:
+      - "8000:8000"
+    volumes:
+      # Carpeta de uploads física compartida
+      - ./backend/uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - aegis-prod-network
+
+  # ── Celery Worker (Tareas asíncronas) ─────────────────────
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: AEGIS-worker-prod
+    restart: always
+    env_file:
+      - ./backend/.env
+    environment:
+      # Sobrescribir hosts para la red Docker interna
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - TZ=Europe/Madrid
+      - API_DEBUG=false
+    volumes:
+      # Carpeta de uploads física compartida
+      - ./backend/uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - aegis-prod-network
+
+  # ── Celery Beat (Planificador de tareas) ──────────────────
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: AEGIS-beat-prod
+    restart: always
+    command: celery -A app.workers.celery_app beat --loglevel=info -s /tmp/celerybeat-schedule
+    env_file:
+      - ./backend/.env
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - API_DEBUG=false
+      - TZ=Europe/Madrid
+    depends_on:
+      redis:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - aegis-prod-network
+
+  # ── Servidor Frontend (Next.js Standalone) ────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+    container_name: AEGIS-frontend-prod
+    restart: always
+    environment:
+      # URL pública o interna de acceso a la API del backend (configurable en VPS)
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - aegis-prod-network
+
+volumes:
+  postgres_data:
+    name: aegisito_postgres_data
+    external: true
+  qdrant_data:
+    name: aegisito_qdrant_data
+    external: true
+
+networks:
+  aegis-prod-network:
+    driver: bridge

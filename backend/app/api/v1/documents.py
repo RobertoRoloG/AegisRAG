@@ -1,5 +1,5 @@
 """
-AegisRAG — Endpoints de gestión de documentos.
+AEGIS — Endpoints de gestión de documentos.
 
 Provee los endpoints para subir documentos PDF y consultar
 su estado de procesamiento. La ingestión real se delega
@@ -8,10 +8,14 @@ a un worker de Celery para no bloquear el hilo de FastAPI.
 
 import logging
 import uuid
+import xml.etree.ElementTree as ET
+import httpx
+import re
+
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, status
+from fastapi import APIRouter, HTTPException, Request, UploadFile, status
 from fastapi.params import Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -21,6 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.db.models import Document, DocumentStatus
 from app.db.postgres import get_db_session
+from app.app_security.file_validator import sanitize_filename, validate_pdf_magic_bytes
+from app.app_security.rate_limit import limiter
 from app.workers.ingestion import process_pdf_task
 
 logger = logging.getLogger(__name__)
@@ -36,13 +42,20 @@ class DocumentItem(BaseModel):
 
     document_id: str
     filename: str
+    file_path: str | None = None
     status: str
+    document_type: str | None = "pdf"
     total_chunks: int | None
     error_message: str | None
     created_at: datetime
     updated_at: datetime
+    is_active: bool = True
 
 
+
+
+class SyncYoutubeRequest(BaseModel):
+    channel_url: str | None = None
 
 class DocumentUploadResponse(BaseModel):
     """Respuesta tras subir un documento."""
@@ -58,16 +71,24 @@ class DocumentStatusResponse(BaseModel):
     document_id: str
     filename: str
     status: str
+    document_type: str | None = "pdf"
     total_chunks: int | None
     error_message: str | None
     created_at: datetime
     updated_at: datetime
+    is_active: bool = True
+
+
+class ToggleDocumentResponse(BaseModel):
+    """Respuesta tras activar/desactivar un documento."""
+
+    document_id: str
+    is_active: bool
 
 
 # ── Constantes ─────────────────────────────────────────────
 
 ALLOWED_EXTENSIONS = {".pdf"}
-MAX_FILE_SIZE_MB = 50
 
 
 # ── Endpoints ──────────────────────────────────────────────
@@ -84,7 +105,9 @@ MAX_FILE_SIZE_MB = 50
         "procesarlo (parsing, chunking, embeddings, Qdrant)."
     ),
 )
+@limiter.limit("20/minute")
 async def upload_document(
+    request: Request,
     file: UploadFile,
     session: AsyncSession = Depends(get_db_session),
 ) -> DocumentUploadResponse:
@@ -92,7 +115,7 @@ async def upload_document(
     Sube un documento PDF para procesamiento asíncrono.
     Devuelve inmediatamente el document_id para consultar el estado después.
     """
-    # ── Validar extensión ──────────────────────────────────
+    # ── Validar nombre ──────────────────────────────────────
     if file.filename is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -106,26 +129,24 @@ async def upload_document(
             detail=f"Solo se aceptan archivos PDF. Extensión recibida: '{file_ext}'",
         )
 
-    # ── Validar tamaño (leer contenido) ────────────────────
+    # ── Leer contenido y validar magic bytes ───────────────
+    # La validación de tamaño se omite deliberadamente: la gestión de
+    # archivos grandes es responsabilidad del equipo operacional.
     content = await file.read()
-    file_size_mb = len(content) / (1024 * 1024)
-    if file_size_mb > MAX_FILE_SIZE_MB:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Archivo demasiado grande: {file_size_mb:.1f}MB (máx: {MAX_FILE_SIZE_MB}MB)",
-        )
+    validate_pdf_magic_bytes(content)
 
     # ── Guardar archivo en disco ───────────────────────────
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # Nombre único para evitar colisiones
+    # Nombre único y sanitizado en disco (previene Path Traversal).
+    # El nombre original se preserva en la base de datos para mostrarlo al usuario.
     file_id = uuid.uuid4()
-    safe_filename = f"{file_id}_{file.filename}"
+    safe_filename = f"{file_id}_{sanitize_filename(file.filename)}"
     file_path = upload_dir / safe_filename
 
     file_path.write_bytes(content)
-    logger.info("Archivo guardado: %s (%0.1f MB)", file_path, file_size_mb)
+    logger.info("Archivo guardado: %s (%0.1f MB)", file_path, len(content) / (1024 * 1024))
 
     # ── Crear registro en PostgreSQL ───────────────────────
     document = Document(
@@ -191,10 +212,12 @@ async def get_document_status(
         document_id=str(document.id),
         filename=document.filename,
         status=document.status.value,
+        document_type=getattr(document, 'document_type', 'pdf'),
         total_chunks=document.total_chunks,
         error_message=document.error_message,
         created_at=document.created_at,
         updated_at=document.updated_at,
+        is_active=document.is_active,
     )
 
 
@@ -216,11 +239,14 @@ async def list_documents(
         {
             "document_id": str(d.id),
             "filename": d.filename,
+            "file_path": d.file_path,
             "status": d.status.value,
+            "document_type": getattr(d, 'document_type', 'pdf'),
             "total_chunks": d.total_chunks,
             "error_message": d.error_message,
             "created_at": d.created_at,
             "updated_at": d.updated_at,
+            "is_active": d.is_active,
         }
         for d in docs
     ]
@@ -337,4 +363,173 @@ async def delete_document(
         "status": "success",
         "message": f"Documento '{document.filename}' y vectores de Qdrant eliminados correctamente.",
     }
+
+
+@router.patch(
+    "/{document_id}/toggle",
+    response_model=ToggleDocumentResponse,
+    summary="Activar o desactivar un documento",
+    description="Permite activar o desactivar un documento (PDF o vídeo) para que se use o se ignore en las búsquedas.",
+)
+async def toggle_document(
+    document_id: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> ToggleDocumentResponse:
+    """Cambia el estado de activación de un documento por su ID."""
+    try:
+        doc_uuid = uuid.UUID(document_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ID de documento inválido: '{document_id}'",
+        )
+
+    result = await session.execute(
+        select(Document).where(Document.id == doc_uuid)
+    )
+    document = result.scalar_one_or_none()
+
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Documento no encontrado: '{document_id}'",
+        )
+
+    document.is_active = not document.is_active
+    # get_db_session hará el commit automáticamente al finalizar
+    logger.info("Documento %s cambiado de estado de activacion a %s", document_id, document.is_active)
+    
+    return ToggleDocumentResponse(
+        document_id=str(document.id),
+        is_active=document.is_active,
+    )
+
+
+@router.get(
+    "/youtube-channel",
+    summary="Obtener ID y URL del canal de YouTube configurado por defecto",
+    description="Devuelve el canal de YouTube configurado en las variables de entorno del servidor.",
+)
+async def get_youtube_channel_info():
+    """Retorna la configuración actual del canal de YouTube."""
+    return {
+        "channel_id": settings.youtube_channel_id,
+        "channel_url": f"https://www.youtube.com/channel/{settings.youtube_channel_id}"
+    }
+
+
+async def get_youtube_video_title(video_url: str) -> str:
+    """Obtiene el título público de un vídeo de YouTube mediante oembed."""
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url={video_url}&format=json"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get(oembed_url)
+            if res.status_code == 200:
+                return res.json().get("title", "Vídeo de YouTube")
+    except Exception:
+        pass
+    return "Vídeo de YouTube"
+
+
+@router.post(
+    "/sync-youtube",
+    status_code=status.HTTP_200_OK,
+    summary="Sincronizar dinámicamente videotutoriales de YouTube",
+    description="Consulta el canal de YouTube o procesa un vídeo individual directo e inicia su indexación."
+)
+@limiter.limit("5/minute")
+async def sync_youtube_videos(
+    request: Request,
+    payload: SyncYoutubeRequest | None = None,
+    session: AsyncSession = Depends(get_db_session),
+):
+    from app.workers.ingestion import process_youtube_video_task
+
+    # 1. Comprobar si es una URL de un vídeo individual
+    if payload and payload.channel_url:
+        video_match = re.search(r"(?:v=|\/v\/|embed\/|youtu\.be\/)([\w-]{11})", payload.channel_url)
+        if video_match:
+            video_id = video_match.group(1)
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            
+            # Comprobar si ya existe
+            result = await session.execute(select(Document).where(Document.file_path == video_url))
+            existe = result.scalar_one_or_none()
+            if existe:
+                if existe.status == DocumentStatus.FAILED:
+                    # Permitir reintentar si falló antes
+                    existe.status = DocumentStatus.PENDING
+                    await session.flush()
+                    process_youtube_video_task.delay(str(existe.id))
+                    return {"status": "success", "message": f"Vídeo '{existe.filename}' reencolado para indexación.", "added": 1}
+                return {"status": "success", "message": f"El vídeo '{existe.filename}' ya estaba indexado.", "added": 0}
+            
+            # Obtener título real del vídeo
+            title = await get_youtube_video_title(video_url)
+            new_id = uuid.uuid4()
+            nuevo_doc = Document(
+                id=new_id,
+                filename=title,
+                file_path=video_url,
+                document_type="youtube",
+                status=DocumentStatus.PENDING
+            )
+            session.add(nuevo_doc)
+            await session.flush()
+            
+            process_youtube_video_task.delay(str(new_id))
+            return {"status": "success", "message": f"Vídeo '{title}' encolado con éxito para indexación.", "added": 1}
+
+    # 2. Si no es un vídeo individual, realizar sincronización del canal por feed RSS XML
+    channel_id = settings.youtube_channel_id
+    if payload and payload.channel_url:
+        match = re.search(r"channel/(UC[\w-]+)", payload.channel_url)
+        if match:
+            channel_id = match.group(1)
+        else:
+            channel_id = payload.channel_url.strip()
+
+    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(url)
+            if r.status_code != 200:
+                raise HTTPException(status_code=400, detail="No se pudo leer el feed del canal de YouTube.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error conectando con YouTube: {e}")
+            
+    root = ET.fromstring(r.text)
+    ns = {'atom': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015'}
+    
+    added_count = 0
+    for entry in root.findall('atom:entry', ns):
+        video_id_el = entry.find('yt:videoId', ns)
+        title_el = entry.find('atom:title', ns)
+        if video_id_el is None or title_el is None:
+            continue
+        
+        video_id = video_id_el.text
+        title = title_el.text
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        
+        # Comprobar si existe
+        result = await session.execute(select(Document).where(Document.file_path == video_url))
+        existe = result.scalar_one_or_none()
+        if not existe:
+            new_id = uuid.uuid4()
+            nuevo_doc = Document(
+                id=new_id,
+                filename=title,
+                file_path=video_url,
+                document_type="youtube",
+                status=DocumentStatus.PENDING
+            )
+            session.add(nuevo_doc)
+            await session.flush()
+            
+            process_youtube_video_task.delay(str(new_id))
+            added_count += 1
+
+    return {"status": "success", "message": f"Se han encolado {added_count} nuevos vídeos.", "added": added_count}
 

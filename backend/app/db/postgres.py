@@ -1,5 +1,5 @@
 """
-AegisRAG — Conexión asíncrona y síncrona a PostgreSQL.
+AEGIS — Conexión asíncrona y síncrona a PostgreSQL.
 
 Configura el AsyncEngine y la session factory de SQLAlchemy 2.0.
 Las sesiones se gestionan como dependency de FastAPI con patrón yield
