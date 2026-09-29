@@ -2,36 +2,62 @@
 
 import React, { useState } from "react";
 import dynamic from "next/dynamic";
-import DocumentSidebar, { TrackedDocument } from "../components/DocumentSidebar";
+import DocumentSidebar from "../components/DocumentSidebar";
 import ChatInterface from "../components/ChatInterface";
+import YoutubeViewer from "../components/YoutubeViewer";
 
 const PdfViewer = dynamic(() => import("../components/PdfViewer"), {
   ssr: false,
 });
 
+export interface ViewerMediaState {
+  type: "pdf" | "youtube";
+  docId: string;
+  filename: string;
+  pageNumber: number;
+  snippet?: string;
+  videoId?: string;
+}
+
 export default function Home() {
-  const [viewerPdf, setViewerPdf] = useState<{
-    docId: string;
-    filename: string;
-    pageNumber: number;
-    snippet?: string;
-  } | null>(null);
+  const [viewerMedia, setViewerMedia] = useState<ViewerMediaState | null>(null);
   const [highlightEnabled, setHighlightEnabled] = useState(true);
 
-  const handleOpenPdf = (docId: string, filename: string, pageNumber: number, snippet?: string, type: "pdf" | "youtube" = "pdf", videoId?: string) => {
+  const handleOpenMedia = (
+    docId: string,
+    filename: string,
+    pageNumber: number,
+    snippet?: string,
+    type: "pdf" | "youtube" = "pdf",
+    videoId?: string
+  ) => {
+    let extractedVideoId = videoId || "";
     if (type === "youtube" || videoId) {
-      let ytUrl = "";
-      if (videoId && videoId.includes("youtube.com")) {
-        ytUrl = videoId;
-      } else {
-        const vId = videoId || docId;
-        ytUrl = `https://www.youtube.com/watch?v=${vId}&t=${pageNumber}s`;
+      if (videoId && videoId.includes("watch?v=")) {
+        extractedVideoId = videoId.split("v=")[1]?.split("&")[0] || videoId;
+      } else if (videoId && videoId.includes("youtu.be/")) {
+        extractedVideoId = videoId.split("youtu.be/")[1]?.split("?")[0] || videoId;
+      } else if (!extractedVideoId) {
+        extractedVideoId = docId;
       }
-      window.open(ytUrl, "_blank");
+      setViewerMedia({
+        type: "youtube",
+        docId,
+        filename,
+        pageNumber,
+        snippet,
+        videoId: extractedVideoId,
+      });
       return;
     }
 
-    setViewerPdf({ docId, filename, pageNumber, snippet });
+    setViewerMedia({
+      type: "pdf",
+      docId,
+      filename,
+      pageNumber,
+      snippet,
+    });
   };
 
   const handleToggleHighlight = () => {
@@ -46,31 +72,51 @@ export default function Home() {
       <div className="flex h-full w-full relative z-10">
         {/* Barra Lateral Izquierda (Documentos y Carga) */}
         <DocumentSidebar
-          onOpenDocument={(docId, filename, type, filePath) => handleOpenPdf(docId, filename, 1, undefined, type, filePath)}
+          onOpenDocument={(docId, filename, type, filePath) =>
+            handleOpenMedia(docId, filename, 1, undefined, type, filePath)
+          }
         />
 
         {/* Ventana de Chat Conversacional RAG */}
         <ChatInterface
-          onOpenPdf={handleOpenPdf}
-          viewerPdf={viewerPdf}
+          onOpenPdf={handleOpenMedia}
+          viewerPdf={
+            viewerMedia && viewerMedia.type === "pdf"
+              ? {
+                  docId: viewerMedia.docId,
+                  filename: viewerMedia.filename,
+                  pageNumber: viewerMedia.pageNumber,
+                  snippet: viewerMedia.snippet,
+                }
+              : null
+          }
           highlightEnabled={highlightEnabled}
           onToggleHighlight={handleToggleHighlight}
         />
 
-        {/* Panel Visor Interactivo Lateral Derecho (PDF) */}
-        {viewerPdf && (
+        {/* Panel Visor Lateral Derecho: PDF con resaltado semántico */}
+        {viewerMedia && viewerMedia.type === "pdf" && (
           <PdfViewer
-            docId={viewerPdf.docId}
-            filename={viewerPdf.filename}
-            pageNumber={viewerPdf.pageNumber}
-            snippet={viewerPdf.snippet}
+            docId={viewerMedia.docId}
+            filename={viewerMedia.filename}
+            pageNumber={viewerMedia.pageNumber}
+            snippet={viewerMedia.snippet}
             highlightEnabled={highlightEnabled}
             onToggleHighlight={handleToggleHighlight}
-            onClose={() => setViewerPdf(null)}
+            onClose={() => setViewerMedia(null)}
+          />
+        )}
+
+        {/* Panel Visor Lateral Derecho: YouTube Embebido con Timestamp exacto */}
+        {viewerMedia && viewerMedia.type === "youtube" && (
+          <YoutubeViewer
+            videoId={viewerMedia.videoId || viewerMedia.docId}
+            seconds={viewerMedia.pageNumber}
+            title={viewerMedia.filename}
+            onClose={() => setViewerMedia(null)}
           />
         )}
       </div>
     </div>
   );
 }
-

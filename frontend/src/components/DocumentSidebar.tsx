@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, Trash2, Search, Video, RotateCw, Play, Eye, EyeOff } from "lucide-react";
-import { uploadDocument, getDocumentStatus, listDocuments, deleteDocument, DocumentStatusResponse, syncYoutubeVideos, getYoutubeChannelConfig, toggleDocument } from "../lib/api";
+import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, Trash2, Search, Video, RotateCw, Play, Eye, EyeOff, FileUp, PlusCircle } from "lucide-react";
+import { uploadDocument, getDocumentStatus, listDocuments, deleteDocument, DocumentStatusResponse, syncYoutubeVideos, getYoutubeChannelConfig, toggleDocument, uploadYoutubeTranscript } from "../lib/api";
 
 export interface TrackedDocument {
   id: string;
@@ -28,6 +28,13 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
   const [ytSearchTerm, setYtSearchTerm] = useState("");
   const [width, setWidth] = useState(400);
   const isResizing = useRef(false);
+
+  // Estados para importación manual de transcripciones VTT/TXT
+  const [showManualUpload, setShowManualUpload] = useState(false);
+  const [manualVideoUrl, setManualVideoUrl] = useState("");
+  const [manualVideoTitle, setManualVideoTitle] = useState("");
+  const [manualTranscript, setManualTranscript] = useState<File | null>(null);
+  const [importingTranscript, setImportingTranscript] = useState(false);
 
   useEffect(() => {
     const savedWidth = localStorage.getItem("aegis_sidebar_width");
@@ -59,6 +66,7 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const transcriptInputRef = useRef<HTMLInputElement>(null);
   const [syncingYt, setSyncingYt] = useState(false);
   const activePollsRef = useRef<{ [key: string]: NodeJS.Timeout }>({});
   
@@ -92,6 +100,39 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
     localStorage.setItem("aegis_youtube_channel_url", val);
   };
 
+  const handleManualTranscript = async () => {
+    if (!manualVideoUrl || !manualVideoTitle || !manualTranscript) {
+      setError("Por favor completa la URL, el título y selecciona el archivo .vtt o .txt");
+      return;
+    }
+    setImportingTranscript(true);
+    setError(null);
+    try {
+      const uploaded = await uploadYoutubeTranscript(manualVideoUrl, manualVideoTitle, manualTranscript);
+      const data = await listDocuments();
+      const formatted: TrackedDocument[] = data.map((d) => ({
+        id: d.document_id,
+        filename: d.filename,
+        file_path: d.file_path,
+        status: d.status,
+        document_type: d.document_type || "pdf",
+        totalChunks: d.total_chunks,
+        errorMessage: d.error_message,
+        is_active: d.is_active ?? true,
+      }));
+      setDocuments(formatted);
+      startPolling(uploaded.document_id, uploaded.filename);
+      setManualVideoUrl("");
+      setManualVideoTitle("");
+      setManualTranscript(null);
+      setShowManualUpload(false);
+      showToast(`Transcripción de '${uploaded.filename}' encolada correctamente.`, "success");
+    } catch (err: any) {
+      setError(err.message || "Error al importar la transcripción del vídeo.");
+    } finally {
+      setImportingTranscript(false);
+    }
+  };
 
   const handleSyncYoutube = async () => {
     setSyncingYt(true);
@@ -107,7 +148,7 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
         document_type: d.document_type || "pdf",
         totalChunks: d.total_chunks,
         errorMessage: d.error_message,
-        is_active: d.is_active,
+        is_active: d.is_active ?? true,
       }));
       setDocuments(formatted);
       
@@ -132,26 +173,27 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
     async function loadDocs() {
       try {
         const data = await listDocuments();
-        const formatted: TrackedDocument[] = data.map((d) => ({
-          id: d.document_id,
-          filename: d.filename,
-          file_path: d.file_path,
-          status: d.status,
-          document_type: d.document_type || "pdf",
-          totalChunks: d.total_chunks,
-          errorMessage: d.error_message,
-          is_active: d.is_active,
-        }));
-        setDocuments(formatted);
-        
-        formatted.forEach((doc) => {
-          if (doc.status === "PENDING" || doc.status === "PROCESSING") {
-            startPolling(doc.id, doc.filename);
-          }
-        });
+        if (data && Array.isArray(data)) {
+          const formatted: TrackedDocument[] = data.map((d) => ({
+            id: d.document_id,
+            filename: d.filename,
+            file_path: d.file_path,
+            status: d.status,
+            document_type: d.document_type || "pdf",
+            totalChunks: d.total_chunks,
+            errorMessage: d.error_message,
+            is_active: d.is_active ?? true,
+          }));
+          setDocuments(formatted);
+          
+          formatted.forEach((doc) => {
+            if (doc.status === "PENDING" || doc.status === "PROCESSING") {
+              startPolling(doc.id, doc.filename);
+            }
+          });
+        }
       } catch (err: any) {
-        console.error("Error al inicializar documentos:", err);
-        setError("Error al cargar la lista de documentos del servidor.");
+        console.warn("Aviso al inicializar documentos:", err);
       }
     }
     loadDocs();
@@ -178,7 +220,7 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
                   status: data.status,
                   totalChunks: data.total_chunks,
                   errorMessage: data.error_message,
-                  is_active: data.is_active,
+                  is_active: data.is_active ?? true,
                 }
               : doc
           )
@@ -487,10 +529,22 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
                     Videotutoriales
                   </h3>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
                     <span className="text-[10px] text-zinc-500 font-mono">
                       {completedVideos.length} vídeos
                     </span>
+                    <button
+                      onClick={() => setShowManualUpload(!showManualUpload)}
+                      className={`p-1.5 rounded-lg border text-[10px] font-semibold uppercase tracking-wider cursor-pointer transition-all flex items-center gap-1 ${
+                        showManualUpload
+                          ? "bg-red-950/40 border-red-800/80 text-red-300"
+                          : "bg-zinc-900 border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                      }`}
+                      title="Importar archivo .VTT o .TXT manualmente"
+                    >
+                      <FileUp className="h-3.5 w-3.5" />
+                      <span>{showManualUpload ? "Cerrar" : "Subir VTT"}</span>
+                    </button>
                     <button
                       onClick={handleSyncYoutube}
                       disabled={syncingYt}
@@ -508,6 +562,59 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
                 </div>
               );
             })()}
+
+            {showManualUpload && (
+              <div className="p-3.5 bg-zinc-900/60 border border-red-950/40 rounded-xl space-y-2.5 animate-in fade-in duration-200">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+                    <FileUp className="h-3.5 w-3.5 text-red-400" />
+                    Importar Transcripción (.vtt / .txt)
+                  </p>
+                </div>
+                <input
+                  type="text"
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  value={manualVideoUrl}
+                  onChange={(e) => setManualVideoUrl(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 text-xs rounded-lg px-3 py-2 outline-none focus:border-red-500/80 transition-all placeholder-zinc-600"
+                />
+                <input
+                  type="text"
+                  placeholder="Título descriptivo del vídeo..."
+                  value={manualVideoTitle}
+                  onChange={(e) => setManualVideoTitle(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 text-xs rounded-lg px-3 py-2 outline-none focus:border-red-500/80 transition-all placeholder-zinc-600"
+                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    ref={transcriptInputRef}
+                    accept=".vtt,.txt"
+                    className="hidden"
+                    onChange={(e) => setManualTranscript(e.target.files?.[0] || null)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => transcriptInputRef.current?.click()}
+                    className="flex-1 bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs rounded-lg px-3 py-2 text-left truncate cursor-pointer transition-all"
+                  >
+                    {manualTranscript ? manualTranscript.name : "Seleccionar archivo .vtt / .txt"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleManualTranscript}
+                    disabled={importingTranscript || !manualTranscript || !manualVideoUrl || !manualVideoTitle}
+                    className="bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs font-semibold px-3 py-2 rounded-lg cursor-pointer transition-all flex items-center gap-1 shrink-0"
+                  >
+                    {importingTranscript ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <span>Indexar</span>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
             
             <input
               type="text"

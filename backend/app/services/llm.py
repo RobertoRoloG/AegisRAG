@@ -99,7 +99,7 @@ class LLMService:
         if history:
             history_lines = []
             for t in history[-4:]:
-                role_label = 'Usuario' if t.get('role') == 'user' else 'Aegisito'
+                role_label = 'Usuario' if t.get('role') == 'user' else 'AEGIS'
                 content = t.get('content', '')
                 if len(content) > 400:
                     content = content[:400] + "..."
@@ -110,7 +110,7 @@ class LLMService:
             "Eres un asistente de recuperación de información de nivel experto. "
             "Tu tarea es analizar la consulta del usuario (y el historial si lo hay) y reescribirla de forma clara, "
             "eliminando ambigüedades, reemplazando pronombres ('eso', 'el anterior', 'lo') por los conceptos reales "
-            "y añadiendo términos clave relacionados de los programas AEGIS para mejorar la búsqueda semántica. "
+            "y deduciendo términos clave contextuales para mejorar la búsqueda semántica. "
             "Devuelve ÚNICAMENTE la consulta reescrita, sin introducciones, sin explicaciones y sin comillas."
         )
         prompt = f"{history_str}Consulta del usuario a reformular: {query}"
@@ -192,7 +192,7 @@ class LLMService:
         payload = {
             "model": groq_model,
             "messages": messages,
-            "temperature": 0.1,
+            "temperature": 0.0,
             "max_tokens": 2048,
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -222,7 +222,7 @@ class LLMService:
                 }
             ],
             "generationConfig": {
-                "temperature": 0.1
+                "temperature": 0.0
             }
         }
         
@@ -261,7 +261,7 @@ class LLMService:
         payload = {
             "model": ds_model,
             "messages": messages,
-            "temperature": 0.1,
+            "temperature": 0.0,
             "max_tokens": 2048,
         }
         

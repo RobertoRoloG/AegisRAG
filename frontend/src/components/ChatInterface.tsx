@@ -7,8 +7,8 @@ import { TrackedDocument } from "./DocumentSidebar";
 import LatencyDisplay from "./LatencyDisplay";
 
 interface ChatInterfaceProps {
-  selectedDocIds: string[];
-  selectedFilenames: string[];
+  selectedDocIds?: string[];
+  selectedFilenames?: string[];
   selectedDocuments?: TrackedDocument[];
   onOpenPdf: (docId: string, filename: string, pageNumber: number, snippet?: string, type?: "pdf" | "youtube", videoId?: string) => void;
   viewerPdf: { docId: string; filename: string; pageNumber: number; snippet?: string } | null;
@@ -26,9 +26,9 @@ interface Message {
 }
 
 export default function ChatInterface({
-  selectedDocIds,
-  selectedFilenames,
-  selectedDocuments,
+  selectedDocIds = [],
+  selectedFilenames = [],
+  selectedDocuments = [],
   onOpenPdf,
   viewerPdf,
   highlightEnabled,
@@ -38,7 +38,7 @@ export default function ChatInterface({
     {
       id: "welcome",
       sender: "bot",
-      text: "¡Hola! Soy Aegisito, tu asistente inteligente. Sube un documento PDF o selecciona un videotutorial y hazme cualquier consulta para empezar.",
+      text: "¡Hola! Soy AEGIS, tu asistente inteligente. Sube un documento PDF o selecciona un videotutorial y hazme cualquier consulta para empezar.",
     },
   ]);
   const [sessionId, setSessionId] = useState<string>("");
@@ -118,7 +118,7 @@ export default function ChatInterface({
       {
         id: "welcome",
         sender: "bot",
-        text: "¡Hola! Soy Aegisito, tu asistente inteligente. Sube un documento PDF o selecciona un videotutorial y hazme cualquier consulta para empezar.",
+        text: "¡Hola! Soy AEGIS, tu asistente inteligente. Sube un documento PDF o selecciona un videotutorial y hazme cualquier consulta para empezar.",
       },
     ]);
   };

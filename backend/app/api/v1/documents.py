@@ -15,7 +15,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.params import Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ from app.db.models import Document, DocumentStatus
 from app.db.postgres import get_db_session
 from app.app_security.file_validator import sanitize_filename, validate_pdf_magic_bytes
 from app.app_security.rate_limit import limiter
-from app.workers.ingestion import process_pdf_task
+from app.workers.ingestion import process_pdf_task, process_youtube_transcript_task
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -52,10 +52,16 @@ class DocumentItem(BaseModel):
     is_active: bool = True
 
 
-
-
 class SyncYoutubeRequest(BaseModel):
     channel_url: str | None = None
+    full_scan: bool = False
+
+
+class YoutubeTranscriptUploadResponse(BaseModel):
+    document_id: str
+    filename: str
+    status: str
+
 
 class DocumentUploadResponse(BaseModel):
     """Respuesta tras subir un documento."""
@@ -89,9 +95,67 @@ class ToggleDocumentResponse(BaseModel):
 # ── Constantes ─────────────────────────────────────────────
 
 ALLOWED_EXTENSIONS = {".pdf"}
+ALLOWED_TRANSCRIPT_EXTENSIONS = {".vtt", ".txt"}
 
 
 # ── Endpoints ──────────────────────────────────────────────
+
+
+@router.post(
+    "/youtube-transcript",
+    response_model=YoutubeTranscriptUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Importar una transcripción de YouTube con tiempos (.vtt o .txt)",
+)
+@limiter.limit("20/minute")
+async def upload_youtube_transcript(
+    request: Request,
+    video_url: str = Form(...),
+    title: str = Form(...),
+    transcript_file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db_session),
+) -> YoutubeTranscriptUploadResponse:
+    """Importa un VTT/TXT con timestamps generado fuera del servidor y lo indexa como videotutorial."""
+    video_match = re.search(r"(?:v=|/v/|embed/|youtu\.be/)([\w-]{11})", video_url)
+    if not video_match:
+        raise HTTPException(status_code=400, detail="La URL de YouTube no es válida")
+
+    extension = Path(transcript_file.filename or "").suffix.lower()
+    if extension not in ALLOWED_TRANSCRIPT_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="La transcripción debe ser un archivo .vtt o .txt")
+
+    transcript = (await transcript_file.read()).decode("utf-8-sig", errors="replace")
+    if not transcript.strip():
+        raise HTTPException(status_code=400, detail="La transcripción está vacía")
+
+    video_id = video_match.group(1)
+    normalized_url = f"https://www.youtube.com/watch?v={video_id}"
+    existing = await session.execute(select(Document).where(Document.file_path == normalized_url))
+    document = existing.scalar_one_or_none()
+    if document is None:
+        document = Document(
+            id=uuid.uuid4(),
+            filename=title.strip() or f"Vídeo {video_id}",
+            file_path=normalized_url,
+            document_type="youtube",
+            status=DocumentStatus.PENDING,
+        )
+        session.add(document)
+    else:
+        document.filename = title.strip() or document.filename
+        document.status = DocumentStatus.PENDING
+        document.total_chunks = None
+        document.error_message = None
+
+    document_id = str(document.id)
+    await session.commit()
+    process_youtube_transcript_task.delay(document_id, transcript)
+
+    return YoutubeTranscriptUploadResponse(
+        document_id=document_id,
+        filename=document.filename,
+        status=DocumentStatus.PENDING.value,
+    )
 
 
 @router.post(

@@ -15,10 +15,12 @@ export interface DocumentStatusResponse {
   document_id: string;
   filename: string;
   status: string;
+  document_type?: string;
   total_chunks: number | null;
   error_message: string | null;
   created_at: string;
   updated_at: string;
+  is_active?: boolean;
 }
 
 export interface SourceDocument {
@@ -88,13 +90,25 @@ export async function uploadDocument(file: File): Promise<DocumentUploadResponse
  * Consulta el estado actual de procesamiento de un documento.
  */
 export async function getDocumentStatus(documentId: string): Promise<DocumentStatusResponse> {
-  const response = await fetch(`${BACKEND_BASE_URL}/documents/${documentId}/status`);
-  
-  if (!response.ok) {
-    throw new Error("No se pudo obtener el estado del documento");
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/documents/${documentId}/status`);
+    if (response.ok) {
+      return await response.json();
+    }
+  } catch (err) {
+    console.warn(`[Aegis API] Error de conexión al consultar estado de doc ${documentId}:`, err);
   }
-
-  return response.json();
+  
+  return {
+    document_id: documentId,
+    filename: "",
+    status: "PROCESSING",
+    total_chunks: null,
+    error_message: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    is_active: true,
+  };
 }
 
 /**
@@ -128,21 +142,30 @@ export async function queryChat(
 }
 
 /**
- * Recupera el historial completo de mensajes para una sesión.
+ * Recupera el historial completo de mensajes para una sesión de forma segura.
  */
 export async function getChatHistory(sessionId: string): Promise<ChatHistoryMessage[]> {
-  const response = await fetch(`${BACKEND_BASE_URL}/chat/history/${sessionId}`);
-  if (!response.ok) return [];
-  return response.json();
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/chat/history/${sessionId}`);
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (err) {
+    console.warn("[Aegis API] No se pudo recuperar historial de chat:", err);
+    return [];
+  }
 }
 
 /**
  * Limpia el historial de una sesión.
  */
 export async function clearChatHistory(sessionId: string): Promise<void> {
-  await fetch(`${BACKEND_BASE_URL}/chat/history/${sessionId}`, {
-    method: "DELETE",
-  });
+  try {
+    await fetch(`${BACKEND_BASE_URL}/chat/history/${sessionId}`, {
+      method: "DELETE",
+    });
+  } catch (err) {
+    console.warn("[Aegis API] Error al limpiar historial:", err);
+  }
 }
 
 export interface FAQItem {
@@ -154,22 +177,29 @@ export interface FAQItem {
  * Obtiene las preguntas frecuentes del sistema de forma dinámica y estructurada.
  */
 export async function getPopularQuestions(): Promise<FAQItem[]> {
-  const response = await fetch(`${BACKEND_BASE_URL}/chat/popular-questions`);
-  if (!response.ok) return [];
-  return response.json();
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/chat/popular-questions`);
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (err) {
+    console.warn("[Aegis API] Error al cargar preguntas frecuentes:", err);
+    return [];
+  }
 }
 
 /**
- * Verifica la salud general de los servicios del backend.
+ * Verifica la salud general de los servicios del backend de forma segura.
  */
 export async function checkBackendHealth(): Promise<HealthResponse> {
-  const response = await fetch(`${BACKEND_BASE_URL}/health`);
-  
-  if (!response.ok && response.status !== 503) {
-    throw new Error("Backend inalcanzable");
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/health`);
+    if (!response.ok && response.status !== 503) {
+      return { status: "degraded", postgres: "down", qdrant: "down", redis: "down" };
+    }
+    return await response.json();
+  } catch (err) {
+    return { status: "degraded", postgres: "down", qdrant: "down", redis: "down" };
   }
-
-  return response.json();
 }
 
 export interface DocumentItem {
@@ -182,19 +212,36 @@ export interface DocumentItem {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+  is_active?: boolean;
 }
 
 /**
- * Obtiene el listado de todos los documentos y su estado.
+ * Obtiene el listado de todos los documentos y su estado con reintentos automáticos.
  */
-export async function listDocuments(): Promise<DocumentItem[]> {
-  const response = await fetch(`${BACKEND_BASE_URL}/documents/`);
-  
-  if (!response.ok) {
-    throw new Error("No se pudo obtener el listado de documentos");
+export async function listDocuments(retries: number = 3): Promise<DocumentItem[]> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(`${BACKEND_BASE_URL}/documents/`, {
+        cache: "no-store",
+      });
+      
+      if (response.ok) {
+        return await response.json();
+      }
+      
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+      }
+    } catch (err) {
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+      } else {
+        console.warn("[Aegis API] Backend no disponible temporalmente para /documents/:", err);
+      }
+    }
   }
 
-  return response.json();
+  return [];
 }
 
 /**
@@ -221,15 +268,46 @@ export function getDocumentFileUrl(documentId: string): string {
 }
 
 /**
+ * Importa una transcripción manual (.vtt o .txt) de un vídeo de YouTube.
+ */
+export async function uploadYoutubeTranscript(
+  videoUrl: string,
+  title: string,
+  transcriptFile: File
+): Promise<{ document_id: string; filename: string; status: string }> {
+  const formData = new FormData();
+  formData.append("video_url", videoUrl);
+  formData.append("title", title);
+  formData.append("transcript_file", transcriptFile);
+
+  const response = await fetch(`${BACKEND_BASE_URL}/documents/youtube-transcript`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Error al importar la transcripción del vídeo");
+  }
+
+  return response.json();
+}
+
+/**
  * Lanza la sincronización manual de vídeos de YouTube.
  */
-export async function syncYoutubeVideos(channelUrl?: string): Promise<{ status: string; message: string; added?: number }> {
-  const body = channelUrl ? JSON.stringify({ channel_url: channelUrl }) : undefined;
-  const headers = channelUrl ? { "Content-Type": "application/json" } : undefined;
+export async function syncYoutubeVideos(
+  channelUrl?: string,
+  fullScan: boolean = false
+): Promise<{ status: string; message: string; added?: number }> {
+  const body = JSON.stringify({
+    channel_url: channelUrl || undefined,
+    full_scan: fullScan,
+  });
 
   const response = await fetch(`${BACKEND_BASE_URL}/documents/sync-youtube`, {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json" },
     body,
   });
   
@@ -245,11 +323,38 @@ export async function syncYoutubeVideos(channelUrl?: string): Promise<{ status: 
  * Obtiene la configuración por defecto del canal de YouTube desde el backend.
  */
 export async function getYoutubeChannelConfig(): Promise<{ channel_id: string; channel_url: string }> {
-  const response = await fetch(`${BACKEND_BASE_URL}/documents/youtube-channel`);
-  
+  try {
+    const response = await fetch(`${BACKEND_BASE_URL}/documents/youtube-channel`);
+    if (response.ok) {
+      return await response.json();
+    }
+  } catch (err) {
+    console.warn("[Aegis API] Canal de YouTube fallback:", err);
+  }
+
+  return { channel_id: "default", channel_url: "https://www.youtube.com/@MAIS_IA" };
+}
+
+export interface ToggleDocumentResponse {
+  document_id: string;
+  is_active: boolean;
+}
+
+/**
+ * Activa o desactiva un documento en el sistema para las búsquedas de RAG.
+ */
+export async function toggleDocument(documentId: string): Promise<ToggleDocumentResponse> {
+  const response = await fetch(`${BACKEND_BASE_URL}/documents/${documentId}/toggle`, {
+    method: "PATCH",
+  });
+
   if (!response.ok) {
-    throw new Error("No se pudo obtener la configuración del canal de YouTube");
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Error al cambiar el estado del documento");
   }
 
   return response.json();
 }
+
+
+

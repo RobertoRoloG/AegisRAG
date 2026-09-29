@@ -173,7 +173,7 @@ class CRAGEngine:
         
         if crag_status == "NO_DATA_FOUND":
             answer = (
-                "¡Hola! Soy Aegisito, el asistente oficial de AEGIS. Lamentablemente no he encontrado información "
+                "¡Hola! Soy AEGIS, el asistente inteligente. Lamentablemente no he encontrado información "
                 "relevante en la documentación para responder a tu pregunta de manera precisa. "
                 "¿Hay alguna otra consulta en la que te pueda asistir?"
             )
@@ -202,7 +202,7 @@ class CRAGEngine:
             if history:
                 history_lines = []
                 for turn in history[-4:]:
-                    speaker = "Usuario" if turn.get("role") == "user" else "Aegisito"
+                    speaker = "Usuario" if turn.get("role") == "user" else "AEGIS"
                     content = turn.get('content', '')
                     if len(content) > 400:
                         content = content[:400] + "..."
@@ -210,8 +210,8 @@ class CRAGEngine:
                 history_str = f"Historial reciente de la conversación:\n" + "\n".join(history_lines) + "\n\n"
 
             system_prompt = (
-                "Eres Aegisito, el asistente virtual oficial, cercano y amigable de AEGIS, una empresa de informática.\n"
-                "Tu objetivo es guiar y ayudar a los clientes con sus dudas sobre el funcionamiento de nuestros programas y manuales de manera atenta, educada y profesional. Evita mencionar repetidamente o de forma innecesaria las palabras 'ERP' o 'software de gestión' en tus respuestas. Céntrate en responder directamente a la consulta del usuario, manteniendo la continuidad si la pregunta hace referencia a lo hablado anteriormente.\n\n"
+                "Eres AEGIS, el asistente virtual inteligente, cercano y profesional.\n"
+                "Tu objetivo es guiar y ayudar a los usuarios con sus dudas sobre el funcionamiento de los programas, procesos y manuales de manera atenta, estructurada y profesional. Céntrate en responder directamente a la consulta del usuario, manteniendo la continuidad si la pregunta hace referencia a lo hablado anteriormente.\n\n"
                 "REGLAS ESTRICTAS DE FORMATO Y CITACIÓN:\n"
                 "1. CITAS INLINE EN CADA PÁRRAFO: Cada párrafo o dato de tu respuesta DEBE incluir obligatoriamente su cita correspondiente al final de la frase o párrafo. Si procede de un manual PDF, cítala exactamente como [nombre_archivo.pdf, pág. X] según se indique en el mapa de citas. Si procede de un videotutorial de YouTube, cítala exactamente en el formato [Video: Nombre del video, min. M:SS] o [Video: Nombre, min. H:MM:SS] tal cual aparezca en el mapa de citas. Queda estrictamente prohibido inventar marcas de tiempo, segundos o números de páginas que no estén explícitamente presentes en el mapa de citas.\n"
                 "2. INTEGRACIÓN MULTIFUENTE (PDFs + VIDEOS): Cuando el contexto contenga fragmentos tanto de manuales PDF como de videotutoriales de YouTube, integra y complementa armónicamente la información de ambas fuentes en tu explicación, contrastando los procedimientos técnicos del PDF con los consejos prácticos del videotutorial y citando cada uno en su sitio correspondiente.\n"

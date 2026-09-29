@@ -16,7 +16,6 @@ import os
 import uuid
 from dataclasses import dataclass
 
-from fastembed import TextEmbedding, SparseTextEmbedding
 from qdrant_client.models import (
     Distance, 
     PointStruct, 
@@ -32,13 +31,27 @@ from app.db.qdrant import get_qdrant_client
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# ── Inicialización síncrona de los modelos de embeddings (Eager Startup) ─────
-cpu_threads = os.cpu_count() or 4
-logger.info("Cargando modelo denso de forma inicial: %s (hilos: %d)", settings.embedding_model, cpu_threads)
-dense_model = TextEmbedding(model_name=settings.embedding_model, threads=cpu_threads)
+# ── Lazy Loading Singleton de modelos de embeddings ─────────────────────────
+_dense_model = None
+_sparse_model = None
 
-logger.info("Cargando modelo esparso de forma inicial: %s (hilos: %d)", settings.sparse_embedding_model, cpu_threads)
-sparse_model = SparseTextEmbedding(model_name=settings.sparse_embedding_model, threads=cpu_threads)
+def get_dense_model():
+    global _dense_model
+    if _dense_model is None:
+        from fastembed import TextEmbedding
+        cpu_threads = os.cpu_count() or 4
+        logger.info("Cargando modelo denso ONNX: %s (hilos: %d)", settings.embedding_model, cpu_threads)
+        _dense_model = TextEmbedding(model_name=settings.embedding_model, threads=cpu_threads)
+    return _dense_model
+
+def get_sparse_model():
+    global _sparse_model
+    if _sparse_model is None:
+        from fastembed import SparseTextEmbedding
+        cpu_threads = os.cpu_count() or 4
+        logger.info("Cargando modelo esparso ONNX: %s (hilos: %d)", settings.sparse_embedding_model, cpu_threads)
+        _sparse_model = SparseTextEmbedding(model_name=settings.sparse_embedding_model, threads=cpu_threads)
+    return _sparse_model
 
 
 @dataclass
@@ -119,7 +132,7 @@ def ensure_collection() -> None:
 
 def generate_dense_embeddings(texts: list[str]) -> list[list[float]]:
     """Genera embeddings densos para una lista de textos."""
-    embeddings = list(dense_model.embed(texts))
+    embeddings = list(get_dense_model().embed(texts))
     return [emb.tolist() for emb in embeddings]
 
 
@@ -128,7 +141,7 @@ def generate_sparse_embeddings(texts: list[str]) -> list[dict[str, list]]:
     Genera embeddings esparcidos (SPLADE) para una lista de textos.
     Retorna una lista de diccionarios con formato {"indices": list[int], "values": list[float]}.
     """
-    embeddings = list(sparse_model.embed(texts))
+    embeddings = list(get_sparse_model().embed(texts))
     
     # Cada embedding es un objeto SparseEmbedding con .indices y .values
     result = []

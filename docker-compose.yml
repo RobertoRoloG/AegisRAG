@@ -9,7 +9,7 @@ services:
   # historial de chats y métricas del sistema.
   # ----------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-bookworm
     container_name: AEGIS-postgres
     restart: unless-stopped
     environment:

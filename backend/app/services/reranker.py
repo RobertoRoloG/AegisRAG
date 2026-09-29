@@ -19,9 +19,15 @@ class ReRankerService:
     """Clase de negocio para evaluar la relevancia de los fragmentos."""
 
     def __init__(self) -> None:
-        logger.info("Cargando modelo Cross-Encoder Reranker de forma inicial: %s", settings.reranker_model)
-        self.model = TextCrossEncoder(model_name=settings.reranker_model)
-        logger.info("Reranker cargado correctamente")
+        self._model = None
+
+    def get_model(self) -> TextCrossEncoder:
+        """Carga perezosa del modelo Cross-Encoder."""
+        if self._model is None:
+            logger.info("Cargando modelo Cross-Encoder Reranker: %s", settings.reranker_model)
+            self._model = TextCrossEncoder(model_name=settings.reranker_model)
+            logger.info("Reranker cargado correctamente")
+        return self._model
 
     def rerank(self, query: str, documents: list[dict], top_n: int = 3) -> list[dict]:
         """
@@ -50,7 +56,8 @@ class ReRankerService:
         texts = [doc["text"] for doc in documents]
 
         # El método rerank de FastEmbed genera un iterable de floats (logits)
-        logits = list(self.model.rerank(query, texts))
+        model = self.get_model()
+        logits = list(model.rerank(query, texts))
 
         import math
 

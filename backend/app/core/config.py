@@ -36,10 +36,10 @@ class Settings(BaseSettings):
     ]
 
     # ── PostgreSQL ─────────────────────────────────────────
-    postgres_user: str = "AEGIS"
-    postgres_password: str = "AEGIS_secret"
-    postgres_db: str = "AEGIS"
-    postgres_host: str = "localhost"
+    postgres_user: str = "aegisrag"
+    postgres_password: str = "aegisrag_secret"
+    postgres_db: str = "aegisrag"
+    postgres_host: str = "127.0.0.1"
     postgres_port: int = 5433
 
     @computed_field  # type: ignore[prop-decorator]

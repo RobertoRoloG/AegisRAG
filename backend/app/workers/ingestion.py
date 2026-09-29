@@ -405,7 +405,7 @@ def process_youtube_video_task(self, document_id: str):
                 texto_acumulado.append(text_val)
                 
                 duracion = (start_val + dur_val) - segundo_inicio
-                if duracion >= 90:
+                if duracion >= 45:
                     text_content = " ".join(texto_acumulado)
                     chunks_data.append(ChunkData(
                         text=text_content,
@@ -503,4 +503,145 @@ def process_youtube_video_task(self, document_id: str):
                     "document_id": document_id,
                     "error": f"Error: {exc}",
                 }
+
+
+def _parse_vtt_transcript(transcript_text: str) -> list[tuple[float, str]]:
+    """Extrae inicio y texto de cada bloque WebVTT o texto con timestamps."""
+    timestamp = re.compile(
+        r"(?P<start>\d{2}:\d{2}:\d{2}(?:\.\d{3})?|\d{2}:\d{2}\.\d{3})\s+-->"
+    )
+    entries: list[tuple[float, str]] = []
+    blocks = re.split(r"\n\s*\n", transcript_text.replace("\r\n", "\n"))
+    for block in blocks:
+        match = timestamp.search(block)
+        if not match:
+            continue
+        value = match.group("start")
+        parts = [float(part) for part in value.split(":")]
+        seconds = (
+            parts[-1] + parts[-2] * 60 + (parts[-3] * 3600 if len(parts) == 3 else 0)
+        )
+        lines = block[match.end() :].splitlines()
+        text = " ".join(
+            line.strip() for line in lines if line.strip() and "-->" not in line
+        )
+        text = re.sub(r"<[^>]+>", "", text).strip()
+        if text:
+            entries.append((seconds, text))
+    return entries
+
+
+@celery_app.task(name="AEGIS.process_youtube_transcript", bind=True, max_retries=3)
+def process_youtube_transcript_task(
+    self, document_id: str, transcript_text: str
+):  # noqa: ANN001
+    """Indexa un VTT o transcripción aportada manualmente sin consultar la API de YouTube."""
+    with sync_session_factory() as session:
+        document = session.get(Document, document_id)
+        if document is None:
+            return {"status": "error", "message": "Vídeo no encontrado"}
+        try:
+            document.status = DocumentStatus.PROCESSING
+            session.commit()
+            entries = _parse_vtt_transcript(transcript_text)
+            if not entries:
+                raise ValueError("No se encontraron bloques con timestamps válidos en el archivo")
+
+            chunks_data: list[ChunkData] = []
+            current_text: list[str] = []
+            chunk_start = entries[0][0]
+            chunk_index = 0
+            for start, text in entries:
+                if current_text and start - chunk_start >= 45:
+                    chunks_data.append(
+                        ChunkData(
+                            text=" ".join(current_text),
+                            doc_id=document_id,
+                            filename=document.filename,
+                            page_number=int(chunk_start),
+                            chunk_index=chunk_index,
+                        )
+                    )
+                    chunk_index += 1
+                    current_text = []
+                    chunk_start = start
+                current_text.append(text)
+            if current_text:
+                chunks_data.append(
+                    ChunkData(
+                        text=" ".join(current_text),
+                        doc_id=document_id,
+                        filename=document.filename,
+                        page_number=int(chunk_start),
+                        chunk_index=chunk_index,
+                    )
+                )
+
+            texts = [chunk.text for chunk in chunks_data]
+            dense = generate_dense_embeddings(texts)
+            sparse = generate_sparse_embeddings(texts)
+            client = get_qdrant_client()
+            
+            # Limpiar puntos anteriores del mismo documento si los hubiera
+            from qdrant_client import models as qdrant_models
+            client.delete(
+                collection_name=settings.qdrant_collection,
+                points_selector=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="doc_id",
+                            match=qdrant_models.MatchValue(value=document_id),
+                        )
+                    ]
+                ),
+            )
+            
+            video_id = document.file_path.split("v=")[-1].split("&")[0] if document.file_path else ""
+            points = [
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector={
+                        "dense": dense_value,
+                        "sparse": SparseVector(
+                            indices=sparse_value["indices"],
+                            values=sparse_value["values"],
+                        ),
+                    },
+                    payload={
+                        "doc_id": document_id,
+                        "filename": document.filename,
+                        "page_number": chunk.page_number,
+                        "chunk_index": chunk.chunk_index,
+                        "text": chunk.text,
+                        "type": "youtube",
+                        "video_id": video_id,
+                    },
+                )
+                for chunk, dense_value, sparse_value in zip(
+                    chunks_data, dense, sparse, strict=True
+                )
+            ]
+            client.upsert(collection_name=settings.qdrant_collection, points=points)
+            document.status = DocumentStatus.COMPLETED
+            document.total_chunks = len(chunks_data)
+            document.error_message = None
+            session.commit()
+            return {
+                "status": "completed",
+                "document_id": document_id,
+                "total_chunks": len(chunks_data),
+            }
+        except Exception as exc:
+            session.rollback()
+            document = session.get(Document, document_id)
+            if document is not None:
+                document.status = DocumentStatus.FAILED
+                document.error_message = f"Error al procesar transcripción: {exc}"
+                session.commit()
+            return {
+                "status": "failed",
+                "document_id": document_id,
+                "error": f"Error: {exc}",
+            }
+
 
