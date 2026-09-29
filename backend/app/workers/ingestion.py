@@ -17,6 +17,7 @@ import logging
 import os
 import random
 import re
+import sys
 import threading
 import time
 import uuid
@@ -36,23 +37,42 @@ from qdrant_client.models import (
     SparseVector,
 )
 
+# Garantizar resolución de imports 'app.*' independientemente del directorio de ejecución o IDE
+_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
 except ImportError:
     YouTubeTranscriptApi = None
 
-from app.app_security.prompt_guard import sanitize_text_for_indexing
-from app.core.config import get_settings
-from app.db.models import Document, DocumentStatus
-from app.db.postgres import sync_session_factory
-from app.db.qdrant import get_qdrant_client
-from app.services.vector_store import (
-    ChunkData,
-    generate_dense_embeddings,
-    generate_sparse_embeddings,
-    upsert_chunks,
-)
-from app.workers.celery_app import celery_app
+try:
+    from app.app_security.prompt_guard import sanitize_text_for_indexing
+    from app.core.config import get_settings
+    from app.db.models import Document, DocumentStatus
+    from app.db.postgres import sync_session_factory
+    from app.db.qdrant import get_qdrant_client
+    from app.services.vector_store import (
+        ChunkData,
+        generate_dense_embeddings,
+        generate_sparse_embeddings,
+        upsert_chunks,
+    )
+    from app.workers.celery_app import celery_app
+except ImportError:
+    from backend.app.app_security.prompt_guard import sanitize_text_for_indexing
+    from backend.app.core.config import get_settings
+    from backend.app.db.models import Document, DocumentStatus
+    from backend.app.db.postgres import sync_session_factory
+    from backend.app.db.qdrant import get_qdrant_client
+    from backend.app.services.vector_store import (
+        ChunkData,
+        generate_dense_embeddings,
+        generate_sparse_embeddings,
+        upsert_chunks,
+    )
+    from backend.app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -70,8 +90,9 @@ def _get_rapid_ocr():
             from rapidocr_onnxruntime import RapidOCR
             logger.info("Cargando motor ultra-rápido RapidOCR (ONNX) en CPU...")
             _rapid_ocr = RapidOCR()
-        except ImportError:
-            logger.warning("rapidocr-onnxruntime no disponible, se usará respaldo.")
+        except (ImportError, Exception) as e:
+            logger.warning("rapidocr-onnxruntime no disponible (%s), se usará respaldo.", e)
+            return None
     return _rapid_ocr
 
 
@@ -83,8 +104,9 @@ def _get_easy_ocr():
             import easyocr
             logger.info("Cargando modelo EasyOCR respaldo en CPU...")
             _easy_ocr_reader = easyocr.Reader(["es", "en"], gpu=False)
-        except ImportError:
-            logger.warning("easyocr no disponible.")
+        except (ImportError, Exception) as e:
+            logger.warning("easyocr no disponible (%s).", e)
+            return None
     return _easy_ocr_reader
 
 
