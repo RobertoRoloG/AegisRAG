@@ -3,8 +3,9 @@
     "backend"
   ],
   "extraPaths": [
-    "./backend"
+    "./backend",
+    "./"
   ],
-  "venvPath": "backend",
+  "venvPath": ".",
   "venv": ".venv"
 }
