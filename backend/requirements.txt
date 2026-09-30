@@ -44,3 +44,6 @@ slowapi>=0.1.9,<1.0.0
 # --- OCR rápido ONNX ---
 rapidocr-onnxruntime>=1.2.0,<2.0.0
 
+# --- YouTube Transcripciones ---
+youtube-transcript-api>=0.6.2,<1.0.0
+

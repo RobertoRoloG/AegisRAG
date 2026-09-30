@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import dynamic from "next/dynamic";
-import DocumentSidebar from "../components/DocumentSidebar";
+import DocumentSidebar, { TrackedDocument } from "../components/DocumentSidebar";
 import ChatInterface from "../components/ChatInterface";
 import YoutubeViewer from "../components/YoutubeViewer";
 
@@ -21,7 +21,14 @@ export interface ViewerMediaState {
 
 export default function Home() {
   const [viewerMedia, setViewerMedia] = useState<ViewerMediaState | null>(null);
+  const [documents, setDocuments] = useState<TrackedDocument[]>([]);
   const [highlightEnabled, setHighlightEnabled] = useState(true);
+
+  const activeCompletedDocs = documents.filter(
+    (d) => d.status === "COMPLETED" && d.is_active
+  );
+  const selectedDocIds = activeCompletedDocs.map((d) => d.id);
+  const selectedFilenames = activeCompletedDocs.map((d) => d.filename);
 
   const handleOpenMedia = (
     docId: string,
@@ -75,10 +82,14 @@ export default function Home() {
           onOpenDocument={(docId, filename, type, filePath) =>
             handleOpenMedia(docId, filename, 1, undefined, type, filePath)
           }
+          onDocumentsChange={setDocuments}
         />
 
         {/* Ventana de Chat Conversacional RAG */}
         <ChatInterface
+          selectedDocIds={selectedDocIds}
+          selectedFilenames={selectedFilenames}
+          selectedDocuments={activeCompletedDocs}
           onOpenPdf={handleOpenMedia}
           viewerPdf={
             viewerMedia && viewerMedia.type === "pdf"

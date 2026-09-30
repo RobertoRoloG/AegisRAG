@@ -4,8 +4,9 @@
   ],
   "extraPaths": [
     "./backend",
-    "./"
+    "."
   ],
-  "venvPath": ".",
-  "venv": ".venv"
+  "venvPath": "backend",
+  "venv": ".venv",
+  "typeCheckingMode": "basic"
 }

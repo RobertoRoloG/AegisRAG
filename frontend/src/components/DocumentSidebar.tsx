@@ -17,9 +17,10 @@ export interface TrackedDocument {
 
 interface DocumentSidebarProps {
   onOpenDocument: (docId: string, filename: string, type: "pdf" | "youtube", filePath?: string) => void;
+  onDocumentsChange?: (documents: TrackedDocument[]) => void;
 }
 
-export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps) {
+export default function DocumentSidebar({ onOpenDocument, onDocumentsChange }: DocumentSidebarProps) {
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,10 @@ export default function DocumentSidebar({ onOpenDocument }: DocumentSidebarProps
       setWidth(parseInt(savedWidth, 10));
     }
   }, []);
+
+  useEffect(() => {
+    onDocumentsChange?.(documents);
+  }, [documents, onDocumentsChange]);
 
   const handleMouseMove = (mouseMoveEvent: MouseEvent) => {
     if (!isResizing.current) return;

@@ -706,10 +706,10 @@ export default function ChatInterface({
           {messages.length === 1 && messages[0].id === "welcome" && !loading && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 max-w-2xl mx-auto">
               {(faqs.length > 0 ? faqs : [
-                { text: "¿Cómo realizo el cierre de ejercicio contable?", desc: "Procedimientos de cierre y apertura de la contabilidad." },
-                { text: "¿Qué requisitos tiene la Ley de Fraude Fiscal / Veri*factu?", desc: "Cambios en series, firmas digitales y firmas de registros." },
-                { text: "¿Cómo hago una copia de seguridad interna?", desc: "Resguardar la base de datos de la empresa de forma local." },
-                { text: "¿Cómo configuro el límite de registros en los GRID?", desc: "Optimizar la visualización de registros en las rejillas." }
+                { text: "¿Cuál es el resumen del contenido indexado?", desc: "Puntos clave y visión general de la documentación." },
+                { text: "¿Cuáles son las conclusiones y puntos destacados?", desc: "Extracción de los aspectos y resultados más relevantes." },
+                { text: "¿Qué procedimientos o metodologías se detallan?", desc: "Pasos, requisitos y guías descritas en el material." },
+                { text: "¿Qué entidades, fechas o datos clave se mencionan?", desc: "Identificación de nombres y terminología importante." }
               ]).map((faq, fIdx) => (
                 <button
                   key={fIdx}

@@ -24,6 +24,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
+from typing import Any, Optional
 
 import numpy as np
 import pypdfium2
@@ -37,7 +38,7 @@ from qdrant_client.models import (
     SparseVector,
 )
 
-# Garantizar resolución de imports 'app.*' independientemente del directorio de ejecución o IDE
+# Garantizar resolución de imports 'app.*'
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
@@ -47,32 +48,18 @@ try:
 except ImportError:
     YouTubeTranscriptApi = None
 
-try:
-    from app.app_security.prompt_guard import sanitize_text_for_indexing
-    from app.core.config import get_settings
-    from app.db.models import Document, DocumentStatus
-    from app.db.postgres import sync_session_factory
-    from app.db.qdrant import get_qdrant_client
-    from app.services.vector_store import (
-        ChunkData,
-        generate_dense_embeddings,
-        generate_sparse_embeddings,
-        upsert_chunks,
-    )
-    from app.workers.celery_app import celery_app
-except ImportError:
-    from backend.app.app_security.prompt_guard import sanitize_text_for_indexing
-    from backend.app.core.config import get_settings
-    from backend.app.db.models import Document, DocumentStatus
-    from backend.app.db.postgres import sync_session_factory
-    from backend.app.db.qdrant import get_qdrant_client
-    from backend.app.services.vector_store import (
-        ChunkData,
-        generate_dense_embeddings,
-        generate_sparse_embeddings,
-        upsert_chunks,
-    )
-    from backend.app.workers.celery_app import celery_app
+from app.app_security.prompt_guard import sanitize_text_for_indexing
+from app.core.config import get_settings
+from app.db.models import Document, DocumentStatus
+from app.db.postgres import sync_session_factory
+from app.db.qdrant import get_qdrant_client
+from app.services.vector_store import (
+    ChunkData,
+    generate_dense_embeddings,
+    generate_sparse_embeddings,
+    upsert_chunks,
+)
+from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -97,15 +84,16 @@ def _get_rapid_ocr():
 
 
 def _get_easy_ocr():
-    """Retorna la instancia global del lector EasyOCR como respaldo."""
+    """Retorna la instancia global del lector EasyOCR como respaldo si está instalado."""
     global _easy_ocr_reader
     if _easy_ocr_reader is None:
         try:
-            import easyocr
+            import importlib
+            easyocr = importlib.import_module("easyocr")
             logger.info("Cargando modelo EasyOCR respaldo en CPU...")
             _easy_ocr_reader = easyocr.Reader(["es", "en"], gpu=False)
         except (ImportError, Exception) as e:
-            logger.warning("easyocr no disponible (%s).", e)
+            logger.debug("easyocr no instalado (%s). Usando RapidOCR como motor principal.", e)
             return None
     return _easy_ocr_reader
 
@@ -373,7 +361,8 @@ def process_youtube_video_task(self, document_id: str):
         
         try:
             # Extraer video_id de la URL
-            video_id = doc.file_path.split("v=")[-1].split("&")[0]
+            file_path_str = doc.file_path or ""
+            video_id = file_path_str.split("v=")[-1].split("&")[0] if file_path_str else str(doc.id)
             logger.info("Descargando transcripción para video_id: %s", video_id)
             
             try:
@@ -410,15 +399,17 @@ def process_youtube_video_task(self, document_id: str):
                     try:
                         cookie_jar = MozillaCookieJar(cookies_path)
                         cookie_jar.load(ignore_discard=True, ignore_expires=True)
-                        session_http.cookies = cookie_jar
+                        session_http.cookies.update(cookie_jar)
                     except Exception as e:
                         logger.warning("Error al cargar las cookies desde MozillaCookieJar: %s", e)
 
                 if YouTubeTranscriptApi is None:
                     raise ImportError("El módulo 'youtube-transcript-api' no está instalado en el entorno.")
 
-                ytt = YouTubeTranscriptApi(http_client=session_http)
-                transcript = ytt.fetch(video_id, languages=['es', 'es-ES', 'es-419', 'en'])
+                api_cls: Any = YouTubeTranscriptApi
+                ytt = api_cls(http_client=session_http)
+                fetched = ytt.fetch(video_id, languages=['es', 'es-ES', 'es-419', 'en'])
+                transcript = fetched.to_raw_data() if hasattr(fetched, 'to_raw_data') else list(fetched)
             except Exception as tr_exc:
                 # Si YouTube no tiene transcripción o persiste el error, marcamos como FAILED
                 logger.warning("Vídeo %s sin transcripción disponible: %s", video_id, tr_exc)
@@ -430,41 +421,45 @@ def process_youtube_video_task(self, document_id: str):
             # Segmentar transcripción en bloques de 45-90 segundos
             chunks_data: list[ChunkData] = []
             chunk_index = 0
-            texto_acumulado = []
-            segundo_inicio = None
+            texto_acumulado: list[str] = []
+            segundo_inicio: float = 0.0
+            has_started = False
             
             for entrada in transcript:
-                text_val = getattr(entrada, 'text', None) or (entrada.get('text') if isinstance(entrada, dict) else str(entrada))
-                start_val = getattr(entrada, 'start', None) if hasattr(entrada, 'start') else (entrada.get('start') if isinstance(entrada, dict) else 0.0)
-                dur_val = getattr(entrada, 'duration', None) if hasattr(entrada, 'duration') else (entrada.get('duration') if isinstance(entrada, dict) else 0.0)
+                text_val = str(entrada.get("text", "") if isinstance(entrada, dict) else getattr(entrada, "text", ""))
+                start_val = float(entrada.get("start", 0.0) if isinstance(entrada, dict) else getattr(entrada, "start", 0.0))
+                dur_val = float(entrada.get("duration", 0.0) if isinstance(entrada, dict) else getattr(entrada, "duration", 0.0))
 
-                if segundo_inicio is None:
+                if not has_started:
                     segundo_inicio = start_val
+                    has_started = True
+
                 texto_acumulado.append(text_val)
                 
-                duracion = (start_val + dur_val) - segundo_inicio
-                if duracion >= 45:
-                    text_content = " ".join(texto_acumulado)
-                    chunks_data.append(ChunkData(
-                        text=text_content,
-                        doc_id=str(doc.id),
-                        filename=doc.filename,
-                        page_number=int(segundo_inicio),  # Usamos page_number para almacenar el timestamp en segundos
-                        chunk_index=chunk_index
-                    ))
+                if (start_val + dur_val) - segundo_inicio >= 45:
+                    chunks_data.append(
+                        ChunkData(
+                            text=" ".join(texto_acumulado),
+                            doc_id=str(doc.id),
+                            filename=doc.filename,
+                            page_number=int(segundo_inicio),
+                            chunk_index=chunk_index,
+                        )
+                    )
                     chunk_index += 1
                     texto_acumulado = []
-                    segundo_inicio = None
+                    has_started = False
                     
-            if texto_acumulado and segundo_inicio is not None:
-                text_content = " ".join(texto_acumulado)
-                chunks_data.append(ChunkData(
-                    text=text_content,
-                    doc_id=str(doc.id),
-                    filename=doc.filename,
-                    page_number=int(segundo_inicio),
-                    chunk_index=chunk_index
-                ))
+            if texto_acumulado and has_started:
+                chunks_data.append(
+                    ChunkData(
+                        text=" ".join(texto_acumulado),
+                        doc_id=str(doc.id),
+                        filename=doc.filename,
+                        page_number=int(segundo_inicio),
+                        chunk_index=chunk_index,
+                    )
+                )
                 
             if not chunks_data:
                 logger.warning("La transcripción del vídeo %s está vacía.", video_id)

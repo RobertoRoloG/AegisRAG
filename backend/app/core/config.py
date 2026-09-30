@@ -86,6 +86,8 @@ class Settings(BaseSettings):
     # ── LLM ────────────────────────────────────────────────
     llm_provider: str = "groq"
     llm_model: str = "openai/gpt-oss-120b"
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
     openai_api_key: str | None = None
     groq_api_key: str | None = None
     gemini_api_key: str | None = None

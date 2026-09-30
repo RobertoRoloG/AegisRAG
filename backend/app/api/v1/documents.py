@@ -15,8 +15,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.params import Depends
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
