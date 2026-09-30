@@ -180,7 +180,13 @@ def process_pdf_task(self, document_id: str) -> dict[str, str | int]:  # noqa: A
             logger.info("Documento %s marcado como PROCESSING", document_id)
 
             # ── 2. Extracción de Páginas (Thread-Safe + OCR Paralelo) ──
-            digital_pages, ocr_pages = _extract_pdf_pages_safe(document.file_path)
+            target_path = Path(document.file_path)
+            if not target_path.is_absolute() and not target_path.exists():
+                backend_relative = _BACKEND_DIR / target_path
+                if backend_relative.exists():
+                    target_path = backend_relative
+
+            digital_pages, ocr_pages = _extract_pdf_pages_safe(str(target_path))
 
             logger.info(
                 "PDF '%s': %d páginas digitales, %d páginas requieren OCR",
@@ -251,8 +257,8 @@ def process_pdf_task(self, document_id: str) -> dict[str, str | int]:  # noqa: A
                 document_id,
             )
 
-            # ── 4 & 5. Generar embeddings e Insertar en Qdrant por lotes (Batching de 100) ──
-            batch_size = 100
+            # ── 4 & 5. Generar embeddings e Insertar en Qdrant por lotes (Batching ligero de 25) ──
+            batch_size = 25
             total_chunks = len(chunks)
             logger.info(
                 "Iniciando cálculo de embeddings e inserción en Qdrant por lotes (Lote: %d, Total: %d chunks)",

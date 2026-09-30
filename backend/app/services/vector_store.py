@@ -39,18 +39,26 @@ def get_dense_model():
     global _dense_model
     if _dense_model is None:
         from fastembed import TextEmbedding
-        cpu_threads = os.cpu_count() or 4
+        cpu_threads = min(4, os.cpu_count() or 4)
         logger.info("Cargando modelo denso ONNX: %s (hilos: %d)", settings.embedding_model, cpu_threads)
-        _dense_model = TextEmbedding(model_name=settings.embedding_model, threads=cpu_threads)
+        _dense_model = TextEmbedding(
+            model_name=settings.embedding_model,
+            threads=cpu_threads,
+            enable_cpu_mem_arena=False,
+        )
     return _dense_model
 
 def get_sparse_model():
     global _sparse_model
     if _sparse_model is None:
         from fastembed import SparseTextEmbedding
-        cpu_threads = os.cpu_count() or 4
+        cpu_threads = min(4, os.cpu_count() or 4)
         logger.info("Cargando modelo esparso ONNX: %s (hilos: %d)", settings.sparse_embedding_model, cpu_threads)
-        _sparse_model = SparseTextEmbedding(model_name=settings.sparse_embedding_model, threads=cpu_threads)
+        _sparse_model = SparseTextEmbedding(
+            model_name=settings.sparse_embedding_model,
+            threads=cpu_threads,
+            enable_cpu_mem_arena=False,
+        )
     return _sparse_model
 
 
@@ -132,7 +140,7 @@ def ensure_collection() -> None:
 
 def generate_dense_embeddings(texts: list[str]) -> list[list[float]]:
     """Genera embeddings densos para una lista de textos."""
-    embeddings = list(get_dense_model().embed(texts))
+    embeddings = list(get_dense_model().embed(texts, batch_size=16))
     return [emb.tolist() for emb in embeddings]
 
 
@@ -141,16 +149,18 @@ def generate_sparse_embeddings(texts: list[str]) -> list[dict[str, list]]:
     Genera embeddings esparcidos (SPLADE) para una lista de textos.
     Retorna una lista de diccionarios con formato {"indices": list[int], "values": list[float]}.
     """
-    embeddings = list(get_sparse_model().embed(texts))
-    
-    # Cada embedding es un objeto SparseEmbedding con .indices y .values
-    result = []
-    for emb in embeddings:
-        result.append({
-            "indices": emb.indices.tolist(),
-            "values": emb.values.tolist(),
-        })
-    return result
+    try:
+        embeddings = list(get_sparse_model().embed(texts, batch_size=8))
+        result = []
+        for emb in embeddings:
+            result.append({
+                "indices": emb.indices.tolist(),
+                "values": emb.values.tolist(),
+            })
+        return result
+    except Exception as exc:
+        logger.warning("Error al generar sparse embeddings (%s). Usando vectores esparcidos vacíos como fallback.", exc)
+        return [{"indices": [], "values": []} for _ in texts]
 
 
 def upsert_chunks(

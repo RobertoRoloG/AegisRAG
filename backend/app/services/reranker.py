@@ -25,7 +25,10 @@ class ReRankerService:
         """Carga perezosa del modelo Cross-Encoder."""
         if self._model is None:
             logger.info("Cargando modelo Cross-Encoder Reranker: %s", settings.reranker_model)
-            self._model = TextCrossEncoder(model_name=settings.reranker_model)
+            self._model = TextCrossEncoder(
+                model_name=settings.reranker_model,
+                enable_cpu_mem_arena=False,
+            )
             logger.info("Reranker cargado correctamente")
         return self._model
 
@@ -55,9 +58,15 @@ class ReRankerService:
         # Extraer textos para el Cross-Encoder
         texts = [doc["text"] for doc in documents]
 
-        # El método rerank de FastEmbed genera un iterable de floats (logits)
-        model = self.get_model()
-        logits = list(model.rerank(query, texts))
+        try:
+            # El método rerank de FastEmbed genera un iterable de floats (logits)
+            model = self.get_model()
+            logits = list(model.rerank(query, texts))
+        except Exception as exc:
+            logger.error("Error en inferencia del Reranker (%s). Usando orden original de similitud.", exc)
+            for idx, doc_info in enumerate(documents):
+                doc_info["rerank_score"] = float(doc_info.get("score", 1.0 / (idx + 1)))
+            return documents[:top_n]
 
         import math
 
